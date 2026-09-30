@@ -217,6 +217,9 @@ def _run_preprocess(store: RunStore, spec: AttemptSpec) -> dict[str, Any]:
     # multi-day combined input; construct the scientific config only after
     # that rewrite while retaining the contract's canonical output identity.
     config = settings.to_preprocess_config()
+    planned_sorter = (
+        config.sorter if StageName.SORTING.value in store.load_run()["enabled_stages"] else None
+    )
     config.sorter = None
     config.sorter_path = None
     config.sorter_config_path = None
@@ -236,7 +239,7 @@ def _run_preprocess(store: RunStore, spec: AttemptSpec) -> dict[str, Any]:
         "max_threads_per_worker": 1,
         "progress_bar": False,
     }
-    result = run_preprocess_session(config)
+    result = run_preprocess_session(config, sorter_for_disk_check=planned_sorter)
     from .session import preprocess_output_inventory, validate_output_inventory
 
     inventory = preprocess_output_inventory(result, config)

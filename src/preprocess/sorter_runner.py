@@ -1811,6 +1811,14 @@ def execute_sorting_job(
         exclude_channels_0based=exclude_channels_0based,
         active_channels_0based=active_channels_0based,
     )
+    # A retry always allocates fresh sorter outputs. Failed attempts remain
+    # on disk and are already included in the volume's used space.
+    from .disk_space import require_disk_space, sorting_space_components
+
+    require_disk_space(
+        Path(output_folder), sorting_space_components(Path(dat_path).stat().st_size),
+        stage="Sorting",
+    )
     matlab_cmd: str | None = None
     ks4_auto_geom_enabled = False
     ks4_auto_geom_options: dict[str, Any] = {}
