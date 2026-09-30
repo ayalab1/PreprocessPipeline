@@ -15,7 +15,9 @@ nNeighPC: 16
 nNeigh: 16
 whitening: full
 nSkipCov: 1
-whiteningRange: 64
+# Local whitening over up to 32 nearest channels, as recommended by Kilosort.
+# Kilosort further limits this to the number of connected channels.
+whiteningRange: 32
 Nrank: 3
 nfullpasses: 6
 maxFR: 40000

@@ -1,8 +1,43 @@
+import warnings
 from pathlib import Path
 
+import numpy as np
 import pytest
+from scipy.io import loadmat
+from spikeinterface.core import NumpyRecording
 
 from src.preprocess import sorter_runner as sr
+
+
+@pytest.mark.parametrize("num_channels, active_count", [(8, 8), (32, 32), (64, 64), (64, 8)])
+def test_kilosort1_default_generates_ops_without_whitening_warning(
+    tmp_path: Path, num_channels: int, active_count: int,
+) -> None:
+    recording = NumpyRecording(np.zeros((10, num_channels), dtype=np.int16), 20000.0)
+    if active_count < num_channels:
+        recording = sr.select_recording_channels(
+            recording, list(range(0, num_channels, num_channels // active_count)),
+        )
+    params = sr.ss.KilosortSorter.default_params()
+    params.update(
+        sr._normalize_kilosort_params(
+            sr._load_params(sr._default_sorter_config_path("kilosort")),
+            num_channels=num_channels,
+            chanmap_mat_path=None,
+            active_channel_count=active_count,
+        )
+    )
+    params = sr.ss.KilosortSorter._check_params(recording, tmp_path, params)
+
+    # Exercise the real wrapper code that emitted issue #20's warning and
+    # serialize its settings, without launching MATLAB or requiring a GPU.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        sr.ss.KilosortSorter._generate_ops_file(recording, params, tmp_path, tmp_path / "input.dat")
+
+    ops = loadmat(tmp_path / "ops.mat", simplify_cells=True)["ops"]
+    assert ops["whiteningRange"] == 32
+    assert ops["Nchan"] == active_count
 
 
 @pytest.mark.parametrize("preprocessed", [False, True])
