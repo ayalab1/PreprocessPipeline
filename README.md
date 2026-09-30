@@ -253,6 +253,14 @@ KS2.5's `skip_kilosort_preprocessing=True` path uses a compact good-channel inpu
 so MATLAB's `Nchan` stride agrees with its binary; the original full binary stays
 unchanged. The option still requires an explicit `scaleproc` as required by SI.
 
+The bundled Kilosort1 config uses `whiteningRange: 32`, matching Kilosort's
+recommendation. Kilosort whitens using the nearest channels by physical distance
+and limits the range to the connected channel count for smaller recordings or
+sorting partitions. Custom sorter YAML files keep their explicit settings;
+change `whiteningRange: 64` to `32` in an existing custom config to remove this
+warning. Whitening neighborhoods do not enforce probe/shank boundaries; use
+sorting partitions when groups must be processed separately.
+
 Autosplit first identifies feature outliers and then applies waveform and amplitude gates. Noise thresholds ending in `_lt` reject values below the threshold; thresholds ending in `_gt` reject values above it. When both ISI ratio and count thresholds are configured, both conditions must be met to label the unit as noise.
 
 Settings can be saved and restored with **Save config** and **Load config**. **Load config** opens this repository's `config/` directory by default.
