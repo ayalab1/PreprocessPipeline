@@ -93,6 +93,15 @@ def run_sorting_stage(
         num_channels=int(preprocess_result.n_channels),
         excluded_channels_0based=partition_excluded,
     )
+    # Check the whole partition plan before launching its first sorter. This
+    # budgets retained temporary data across partitions, even with cleanup off.
+    if any(partition.status != "skipped" for partition in partitions):
+        from .disk_space import require_disk_space, sorting_space_components
+
+        require_disk_space(
+            output_dir, sorting_space_components(sorter_dat_path.stat().st_size),
+            stage="Sorting partitions",
+        )
     timestamp = output_timestamp or datetime.now().strftime("%Y-%m-%d_%H%M%S")
     manifest_partitions = []
     sorter_output_dirs: list[Path] = []

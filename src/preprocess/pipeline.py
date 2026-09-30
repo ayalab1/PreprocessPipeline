@@ -531,7 +531,9 @@ def _load_highamp_frames_by_group(
     return by_group
 
 
-def run_preprocess_session(config: PreprocessConfig) -> PreprocessResult:
+def run_preprocess_session(
+    config: PreprocessConfig, *, sorter_for_disk_check: str | None = None,
+) -> PreprocessResult:
     step_idx = 0
     total_steps = 17
 
@@ -662,6 +664,22 @@ def run_preprocess_session(config: PreprocessConfig) -> PreprocessResult:
     # this rate before concatenation.
     analog_sr = 1250.0 if "wild" in catalog_source_types else (
         effective_sr if catalog.source_type == "openephys" else intan_analog_sr
+    )
+
+    # Discover only the selected inputs before admitting large output writes.
+    # Persistent Runs execute sorting separately, but must reserve its space
+    # here so preprocessing cannot consume the room needed by KiloSort.
+    from .disk_space import preprocess_space_components, require_disk_space
+
+    require_disk_space(
+        output_dir,
+        preprocess_space_components(
+            config, catalog, output_dir=output_dir, basename=basename,
+            n_channels=effective_n_channels, sampling_frequency=effective_sr,
+            analog_sampling_frequency=analog_sr,
+            sorter=sorter_for_disk_check or config.sorter,
+        ),
+        stage="Preprocessing",
     )
 
     _step("Build merge points")

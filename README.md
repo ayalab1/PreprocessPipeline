@@ -289,6 +289,30 @@ allocator state in a process that already imported Torch. Expandable segments
 cannot guarantee that a dataset fits in VRAM or prevent contention with other
 GPU processes.
 
+## Disk-space checks
+
+Before large preprocessing writes, the pipeline checks free space on the volume
+containing the selected local output directory. It estimates the selected
+recordings' processed/raw data, enabled LFP and sleep-scoring outputs, sidecars,
+and two recording-sized allocations for sorting (an exported recording and
+whitened/temporary data). Persistent Runs reserve sorting space during
+preprocessing even though sorting executes as a separate Stage.
+
+Existing outputs reused with overwrite disabled are not counted again. Atomic
+overwrite copies and fresh sorting retries require additional space; previous
+failed sorter files remain allocated. Sorting checks again before launching,
+including standalone sorter calls and partitioned runs. The check runs in the
+Stage worker, so Slurm uses the destination filesystem visible on its compute
+node.
+
+Estimates include headroom of 20% or 5 GiB, whichever is greater, for sorter
+results, postprocessing, metadata, and temporary files. Logs show the destination,
+estimated additional space, and available space. If space is insufficient, the
+Stage stops with an actionable error before large writes or MATLAB startup.
+Free space or select a larger working volume, then retry the failed Stage.
+These are conservative estimates, not a disk reservation: simultaneous jobs,
+quotas, and data-dependent outputs can still exhaust space after the check.
+
 ## Resume an existing session
 
 GUI parameters are saved to `<session>/config/pipeline_gui.json` when a Run is
