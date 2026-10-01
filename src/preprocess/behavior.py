@@ -14,7 +14,10 @@ from scipy.io import loadmat, savemat
 from .io import load_xml_metadata
 
 
-DLC_DISCOVERY_PATTERNS = ("*_filtered.h5", "*_filtered.csv", "*.h5", "*.csv")
+DLC_DISCOVERY_PATTERNS = (
+    "*_filtered.h5", "*_filtered.csv", "*DLC*.h5", "*DLC*.csv",
+    "keypoints.csv", "*.h5", "*.csv",
+)
 VIDEO_PATTERNS = ("*.avi", "*.mp4", "*.mov", "*.m4v")
 
 
@@ -37,6 +40,31 @@ class DlcTrackingTable:
     x_field_names: list[str]
     y_field_names: list[str]
     likelihood_field_names: list[str]
+
+
+@dataclass(frozen=True)
+class CameraSyncCandidate:
+    source: str
+    channel: int
+    timestamps: np.ndarray
+    is_global: bool
+
+    @property
+    def key(self) -> str:
+        return f"{self.source}:{self.channel}"
+
+    @property
+    def label(self) -> str:
+        return f"Analog (ADC{self.channel})" if self.source == "adc" else f"Digital (TTL{self.channel - 1})"
+
+    def matches_video(self, fps: float, n_frames: int, tolerance: float) -> bool:
+        if self.timestamps.size < 3 or fps <= 0:
+            return False
+        interval = float(np.median(np.diff(self.timestamps)))
+        return (
+            abs(interval * fps - 1.0) <= tolerance
+            and abs(self.timestamps.size - n_frames) <= max(2, 2 * fps)
+        )
 
 
 @dataclass
@@ -110,7 +138,7 @@ def discover_dlc_files(
     output_dir: Path | None = None,
     basename: str | None = None,
 ) -> list[DlcFile]:
-    """Discover DLC outputs in recording order, preferring filtered files."""
+    """Discover keypoint tracking outputs in recording order."""
     basepath = Path(basepath).resolve()
     basename = basename or _basename(basepath)
     foldernames, _timestamps = _load_mergepoints(basepath, basename, output_dir)
@@ -196,6 +224,27 @@ def dlc_point_names(table: DlcTrackingTable) -> list[str]:
     return list(table.point_names)
 
 
+def _load_keypoints_csv(path: Path) -> DlcTrackingTable:
+    header = pd.read_csv(path, header=None, nrows=3)
+    if header.iloc[:, 0].tolist() != ["scorer", "bodyparts", "coords"]:
+        raise ValueError(f"{path} must have scorer/bodyparts/coords headers")
+    # Read values separately so an all-missing first frame remains a data row.
+    values = pd.read_csv(path, header=None, skiprows=3)
+    df = values.iloc[:, 1:].copy()
+    df.columns = pd.MultiIndex.from_arrays(
+        [header.iloc[level, 1:].tolist() for level in (1, 2)],
+        names=["bodyparts", "coords"],
+    )
+    df.index = pd.to_numeric(values.iloc[:, 0], errors="raise")
+    field_names = [_flatten_column_parts(col) for col in df.columns]
+    x_cols = _coord_columns(field_names, "x")
+    y_cols = _coord_columns(field_names, "y")
+    likelihood_cols = _coord_columns(field_names, "likelihood")
+    if not (x_cols and y_cols and likelihood_cols):
+        raise ValueError(f"{path} must have x/y/likelihood columns")
+    return _table_from_dataframe(df, field_names, x_cols, y_cols, likelihood_cols)
+
+
 def _load_dlc_csv(path: Path) -> DlcTrackingTable:
     last_error: Exception | None = None
     for header_rows in range(1, 51):
@@ -261,6 +310,8 @@ def load_dlc_tracking(path: Path) -> DlcTrackingTable:
     if suffix == ".h5":
         return _load_dlc_h5(path)
     if suffix == ".csv":
+        if path.name.lower() == "keypoints.csv":
+            return _load_keypoints_csv(path)
         return _load_dlc_csv(path)
     raise ValueError(f"Unsupported DLC file type: {path}")
 
@@ -432,6 +483,102 @@ def _sampling_rate_from_xml(basepath: Path, basename: str) -> float:
     return float(load_xml_metadata(xml_path).sr)
 
 
+def _load_analog_camera_timestamps(path: Path, channel: int) -> np.ndarray:
+    pulses = loadmat(path, simplify_cells=True).get("pulses")
+    if not isinstance(pulses, dict):
+        raise ValueError(f"Invalid pulses structure in {path}")
+    timestamps = np.asarray(pulses.get("timestamps", []), dtype=np.float64)
+    channels = np.asarray(pulses.get("analogChannel", []), dtype=np.float64).reshape(-1)
+    if timestamps.ndim == 1 and timestamps.size == 2:
+        timestamps = timestamps.reshape(1, 2)
+    if timestamps.ndim != 2 or timestamps.shape[1] != 2 or timestamps.shape[0] != channels.size:
+        raise ValueError(f"pulses.timestamps must be N x 2 with N analogChannel values in {path}")
+    onsets = timestamps[channels == channel, 0]
+    if not onsets.size:
+        available = sorted(set(channels.tolist()))
+        raise ValueError(f"No camera pulses on ADC channel {channel} in {path}; available channels: {available}")
+    return onsets
+
+
+def camera_sync_candidates(
+    *, basepath: Path, basename: str, output_dir: Path | None,
+    dlc_file: DlcFile, merge_interval: np.ndarray | None,
+) -> list[CameraSyncCandidate]:
+    """Read existing sync events on each input, preserving recorded timestamps."""
+    candidates: list[CameraSyncCandidate] = []
+
+    def add(source: str, channel: int, timestamps: np.ndarray, is_global: bool) -> None:
+        timestamps = np.asarray(timestamps, dtype=np.float64).reshape(-1)
+        if is_global and merge_interval is not None:
+            timestamps = timestamps[(timestamps >= merge_interval[0]) & (timestamps <= merge_interval[1])]
+        if timestamps.size:
+            candidates.append(CameraSyncCandidate(source, channel, timestamps, is_global))
+
+    local_digital = dlc_file.folder_path / "digitalIn.events.mat"
+    global_digital = ([output_dir / "digitalIn.events.mat"] if output_dir is not None else []) + [
+        basepath / "digitalIn.events.mat", basepath / f"{basename}.DigitalIn.events.mat",
+    ]
+    digital_path = local_digital if local_digital.exists() else next((p for p in global_digital if p.exists()), None)
+    if digital_path is not None:
+        digital = loadmat(digital_path, simplify_cells=True).get("digitalIn")
+        if not isinstance(digital, dict) or "timestampsOn" not in digital:
+            raise ValueError(f"Invalid digitalIn.timestampsOn in {digital_path}")
+        onsets = digital["timestampsOn"]
+        for channel, _length in enumerate(_cell_lengths(onsets), start=1):
+            add("digital", channel, _cell_item(onsets, channel - 1), digital_path != local_digital)
+    else:
+        local_dat = dlc_file.folder_path / "digitalin.dat"
+        global_dat = ([output_dir / "digitalin.dat"] if output_dir is not None else []) + [basepath / "digitalin.dat"]
+        dat_path = local_dat if local_dat.exists() else next((p for p in global_dat if p.exists()), None)
+        if dat_path is not None and dat_path.stat().st_size:
+            sr = _sampling_rate_from_xml(basepath, basename)
+            raw = np.memmap(dat_path, dtype=np.uint16, mode="r")
+            for bit in range(16):
+                high = ((raw & np.uint16(1 << bit)) != 0).astype(np.int8)
+                add("digital", bit + 1, np.flatnonzero(np.diff(high) == 1) / sr, dat_path != local_dat)
+
+    local_pulses = _find_existing_mat(dlc_file.folder_path, dlc_file.folder_name, None, ".pulses.events.mat")
+    generic_local = dlc_file.folder_path / "pulses.events.mat"
+    if local_pulses is None and generic_local.exists():
+        local_pulses = generic_local
+    pulses_path = local_pulses or _find_existing_mat(basepath, basename, output_dir, ".pulses.events.mat")
+    if pulses_path is not None:
+        pulses = loadmat(pulses_path, simplify_cells=True).get("pulses")
+        if not isinstance(pulses, dict):
+            raise ValueError(f"Invalid pulses structure in {pulses_path}")
+        channels = np.asarray(pulses.get("analogChannel", []), dtype=np.float64).reshape(-1)
+        timestamps = np.asarray(pulses.get("timestamps", []), dtype=np.float64).reshape(-1, 2)
+        if len(timestamps) != len(channels):
+            raise ValueError(f"pulses.timestamps and analogChannel disagree in {pulses_path}")
+        for channel in np.unique(channels):
+            add("adc", int(channel), timestamps[channels == channel, 0], local_pulses is None)
+    return candidates
+
+
+def discover_camera_sync_candidates(
+    basepath: Path, *, output_dir: Path | None = None, basename: str | None = None,
+    dlc_files: list[DlcFile] | None = None, fallback_video_fps: float = 40.0,
+    pulses_delta_range: float = 0.01,
+) -> dict[str, tuple[list[CameraSyncCandidate], list[CameraSyncCandidate]]]:
+    """Return recorded inputs and inputs matching each video's cadence/frame count."""
+    basepath = Path(basepath)
+    basename = basename or _basename(basepath)
+    names, intervals = _load_mergepoints(basepath, basename, output_dir)
+    by_folder = dict(zip(names, intervals, strict=True)) if names is not None and intervals is not None else {}
+    found: dict[str, tuple[list[CameraSyncCandidate], list[CameraSyncCandidate]]] = {}
+    files = dlc_files if dlc_files is not None else discover_dlc_files(basepath, output_dir=output_dir, basename=basename)
+    for item in files:
+        table = load_dlc_tracking(item.path)
+        fps = _read_video_fps(item.video_path) or fallback_video_fps
+        candidates = camera_sync_candidates(
+            basepath=basepath, basename=basename, output_dir=output_dir,
+            dlc_file=item, merge_interval=by_folder.get(item.folder_name),
+        )
+        matching = [c for c in candidates if c.matches_video(fps, len(table.frame_index), pulses_delta_range)]
+        found[item.folder_name] = (candidates, matching)
+    return found
+
+
 def _load_local_or_global_ttl(
     *,
     basepath: Path,
@@ -439,7 +586,54 @@ def _load_local_or_global_ttl(
     output_dir: Path | None,
     dlc_file: DlcFile,
     merge_interval: np.ndarray | None,
+    camera_adc_channel: int | None = None,
+    camera_sync_selection: str | None = None,
+    fps: float | None = None,
+    n_frames: int | None = None,
+    pulses_delta_range: float = 0.01,
 ) -> tuple[np.ndarray, bool]:
+    if camera_sync_selection is not None:
+        candidates = camera_sync_candidates(
+            basepath=basepath, basename=basename, output_dir=output_dir,
+            dlc_file=dlc_file, merge_interval=merge_interval,
+        )
+        if camera_sync_selection == "auto":
+            if fps is None or n_frames is None:
+                raise ValueError("Automatic camera sync requires video FPS and tracking frame count")
+            matching = [c for c in candidates if c.matches_video(fps, n_frames, pulses_delta_range)]
+        else:
+            matching = [c for c in candidates if c.key == camera_sync_selection]
+        if len(matching) == 1:
+            return matching[0].timestamps, matching[0].is_global
+        if len(matching) > 1:
+            raise ValueError("Multiple camera sync inputs match this video: " + ", ".join(c.label for c in matching) + ". Select Camera sync input.")
+        if candidates:
+            raise ValueError("No camera sync input matches this video. Check frame counts or select Camera sync input explicitly.")
+        raise FileNotFoundError("No camera sync events found. Export analog/digital input events into this session before processing behavior.")
+    if camera_adc_channel is not None:
+        if camera_adc_channel < 1:
+            raise ValueError("camera_adc_channel must be a 1-based pulses.analogChannel value")
+        local_pulses = _find_existing_mat(
+            dlc_file.folder_path, dlc_file.folder_name, None, ".pulses.events.mat",
+        )
+        if local_pulses is None:
+            generic_local = dlc_file.folder_path / "pulses.events.mat"
+            if generic_local.exists():
+                local_pulses = generic_local
+        if local_pulses is not None:
+            return _load_analog_camera_timestamps(local_pulses, camera_adc_channel), False
+        global_pulses = _find_existing_mat(basepath, basename, output_dir, ".pulses.events.mat")
+        if global_pulses is not None:
+            ttl = _load_analog_camera_timestamps(global_pulses, camera_adc_channel)
+            if merge_interval is not None:
+                start, stop = float(merge_interval[0]), float(merge_interval[1])
+                ttl = ttl[(ttl >= start) & (ttl <= stop)]
+            return ttl, True
+        raise FileNotFoundError(
+            f"Camera sync uses ADC channel {camera_adc_channel}, but no pulses.events.mat was found. "
+            "Export analog input pulses with analog_inputs enabled before running behavior processing."
+        )
+
     local_events = dlc_file.folder_path / "digitalIn.events.mat"
     if local_events.exists():
         return _load_digital_in_timestamps(local_events), False
@@ -472,7 +666,10 @@ def _load_local_or_global_ttl(
                 ttl = ttl[(ttl >= start) & (ttl <= stop)]
             return ttl, True
 
-    raise FileNotFoundError(f"No digitalIn.events.mat or digitalin.dat found for {dlc_file.folder_path}")
+    raise FileNotFoundError(
+        f"No digitalIn.events.mat or digitalin.dat found for {dlc_file.folder_path}. "
+        "If camera sync is recorded on ADC, set the Behavior camera ADC channel and export analog input pulses."
+    )
 
 
 def match_frames_to_ttl(
@@ -615,6 +812,8 @@ def inspect_dlc_ttl_sync(
     dlc_files: list[DlcFile] | None = None,
     pulses_delta_range: float = 0.01,
     fallback_video_fps: float = 40.0,
+    camera_adc_channel: int | None = None,
+    camera_sync_selection: str | None = None,
 ) -> list[str]:
     """Check DLC row counts against camera TTL pulses without producing behavior output."""
     basepath = Path(basepath).resolve()
@@ -648,6 +847,9 @@ def inspect_dlc_ttl_sync(
             output_dir=output_dir,
             dlc_file=dlc_file,
             merge_interval=merge_by_folder.get(dlc_file.folder_name),
+            camera_adc_channel=camera_adc_channel,
+            camera_sync_selection=camera_sync_selection, fps=fps, n_frames=len(table.frame_index),
+            pulses_delta_range=pulses_delta_range,
         )
         _matched_t, _matched_x, _matched_y, _note, warn = match_frames_to_ttl(
             ttl,
@@ -826,7 +1028,7 @@ def process_dlc_behavior(
     basename: str | None = None,
     primary_coords: int = 1,
     primary_point: str | None = None,
-    likelihood: float = 0.95,
+    likelihood: float = 0.0,
     pulses_delta_range: float = 0.01,
     calibration_distance_cm: float | None = None,
     calibration_pixel_distance: float | None = None,
@@ -836,6 +1038,8 @@ def process_dlc_behavior(
     interpolate_gap_sec: float = 0.0,
     clean_mask: np.ndarray | None = None,
     fallback_video_fps: float | None = None,
+    camera_adc_channel: int | None = None,
+    camera_sync_selection: str | None = None,
     overwrite: bool = False,
     save_mat: bool = True,
 ) -> BehaviorProcessingResult:
@@ -855,7 +1059,7 @@ def process_dlc_behavior(
     foldernames, merge_timestamps = _load_mergepoints(basepath, basename, output_dir)
     dlc_files = discover_dlc_files(basepath, output_dir=output_dir, basename=basename)
     if not dlc_files:
-        raise FileNotFoundError(f"No DLC CSV/H5 files found under {basepath}")
+        raise FileNotFoundError(f"No keypoint tracking CSV/H5 files found under {basepath}")
 
     ratio_by_folder: dict[str, float] | None = None
     if pixel_to_cm_ratios_by_folder is not None:
@@ -886,7 +1090,7 @@ def process_dlc_behavior(
     missing_ratios = [dlc_file.folder_name for dlc_file in dlc_files if dlc_file.folder_name not in ratio_by_folder]
     if missing_ratios:
         raise ValueError(
-            "Calibration is missing for DLC epoch(s): "
+            "Calibration is missing for tracking epoch(s): "
             + ", ".join(missing_ratios)
         )
     ratio_values = np.asarray([ratio_by_folder[dlc_file.folder_name] for dlc_file in dlc_files], dtype=np.float64)
@@ -928,6 +1132,9 @@ def process_dlc_behavior(
             output_dir=output_dir,
             dlc_file=dlc_file,
             merge_interval=merge_interval,
+            camera_adc_channel=camera_adc_channel,
+            camera_sync_selection=camera_sync_selection, fps=fps, n_frames=len(table.frame_index),
+            pulses_delta_range=pulses_delta_range,
         )
         matched_t, matched_x, matched_y, note, warn = match_frames_to_ttl(
             ttl,
@@ -1005,6 +1212,8 @@ def process_dlc_behavior(
         "primary_coords": int(primary_coords),
         "primary_point": "" if primary_point is None else str(primary_point),
         "likelihood": float(likelihood),
+        "camera_adc_channel": 0 if camera_adc_channel is None else int(camera_adc_channel),
+        "camera_sync_selection": camera_sync_selection or "legacy",
         "pulses_delta_range": float(pulses_delta_range),
         "pixel_to_cm_ratio": summary_pixel_to_cm_ratio,
         "pixel_to_cm_ratios_by_folder": {folder: float(ratio) for folder, ratio in ratio_by_folder.items()},
@@ -1023,7 +1232,10 @@ def process_dlc_behavior(
         trials=trials,
         epochs=epochs,
         notes=notes,
-        source="deeplabcut",
+        source=",".join(sorted({
+            "keypoints_csv" if item.path.name.lower() == "keypoints.csv" else "deeplabcut"
+            for item in dlc_files
+        })),
         settings=settings,
         x_field_names=x_field_names,
         y_field_names=y_field_names,
