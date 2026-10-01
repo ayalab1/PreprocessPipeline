@@ -1,32 +1,12 @@
 # PreprocessPipeline
 
 A GUI for electrophysiology preprocessing, Kilosort spike sorting, and
-postprocessing, with Phy and CellExplorer-compatible outputs. Supports Intan,
+postprocessing, with Phy and CellExplorer-compatible outputs and behavior tracking
+calibration, synchronization, and export. Supports Intan,
 Open Ephys, merged WILD recordings, single-day and multi-day sessions, and
 local or Slurm execution on Linux and Windows.
 
-```mermaid
-flowchart LR
-    raw("Raw recordings<br/>Intan · Open Ephys · WILD")
-    pre("Preprocess<br/>Filter · Reference · Artifacts")
-    sort("Spike sorting<br/>Kilosort")
-    post("Postprocess<br/>Curation · Quality metrics")
-    out("Outputs<br/>Phy · CellExplorer")
-
-    raw --> pre --> sort --> post --> out
-
-    classDef input fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px;
-    classDef preprocess fill:#ccfbf1,stroke:#0d9488,color:#134e4a,stroke-width:2px;
-    classDef sorting fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px;
-    classDef postprocess fill:#ffedd5,stroke:#ea580c,color:#7c2d12,stroke-width:2px;
-    classDef output fill:#fce7f3,stroke:#db2777,color:#831843,stroke-width:2px;
-    class raw input;
-    class pre preprocess;
-    class sort sorting;
-    class post postprocess;
-    class out output;
-    linkStyle default stroke:#64748b,stroke-width:2px;
-```
+![Electrophysiology and behavior workflows, linked by exported synchronization events](docs/pipeline-overview.svg)
 
 ## Installation
 

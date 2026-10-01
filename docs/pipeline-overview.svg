@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="752" viewBox="0 0 880 752" role="img" aria-labelledby="title description">
+  <title id="title">PreprocessPipeline: electrophysiology and behavior</title>
+  <desc id="description">Two vertical workflows. Electrophysiology recordings are preprocessed, sorted with Kilosort, postprocessed, and exported for Phy and CellExplorer. Video and tracking files are calibrated and aligned to recording time, producing position and speed in animal.behavior.mat. Exported camera events connect preprocessing to behavior synchronization.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#132238"/>
+    </linearGradient>
+    <linearGradient id="ephys" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#1d4ed8"/>
+      <stop offset="1" stop-color="#1e3a8a"/>
+    </linearGradient>
+    <linearGradient id="behavior" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#0f766e"/>
+      <stop offset="1" stop-color="#115e59"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L9 4.5 L0 9Z" fill="#94a3b8"/>
+    </marker>
+    <marker id="sync-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L9 4.5 L0 9Z" fill="#5eead4"/>
+    </marker>
+    <style>
+      text { font-family: "Segoe UI", Arial, sans-serif; }
+      .heading { fill: #f8fafc; font-size: 27px; font-weight: 700; }
+      .subtitle { fill: #b8c5d8; font-size: 16px; }
+      .lane { font-size: 14px; font-weight: 700; letter-spacing: 1.5px; }
+      .label { fill: #ffffff; font-size: 21px; font-weight: 600; }
+      .detail { fill: #e2e8f0; font-size: 16px; }
+      .file { fill: #ccfbf1; font-size: 15px; font-family: Consolas, monospace; }
+      .flow { fill: none; stroke: #94a3b8; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="880" height="752" rx="22" fill="url(#background)"/>
+  <text x="32" y="46" class="heading">PreprocessPipeline</text>
+  <text x="32" y="74" class="subtitle">From recordings and tracking to analysis-ready outputs</text>
+
+  <rect x="24" y="98" width="410" height="596" rx="18" fill="#101c31" stroke="#293a55"/>
+  <rect x="452" y="98" width="404" height="596" rx="18" fill="#0c2629" stroke="#205354"/>
+  <text x="52" y="128" class="lane" fill="#93c5fd">ELECTROPHYSIOLOGY</text>
+  <text x="482" y="128" class="lane" fill="#5eead4">BEHAVIOR</text>
+
+  <g text-anchor="middle">
+    <rect x="52" y="146" width="356" height="78" rx="12" fill="#1e293b" stroke="#52647d"/>
+    <text x="230" y="178" class="label">Raw recordings</text>
+    <text x="230" y="205" class="detail">Intan · Open Ephys · WILD</text>
+
+    <rect x="52" y="248" width="356" height="78" rx="12" fill="url(#ephys)" stroke="#60a5fa"/>
+    <text x="230" y="280" class="label">Preprocess</text>
+    <text x="230" y="307" class="detail">Filter · Reference · Artifacts · Events</text>
+
+    <rect x="52" y="350" width="356" height="78" rx="12" fill="url(#ephys)" stroke="#60a5fa"/>
+    <text x="230" y="382" class="label">Spike sorting</text>
+    <text x="230" y="409" class="detail">Kilosort</text>
+
+    <rect x="52" y="452" width="356" height="78" rx="12" fill="url(#ephys)" stroke="#60a5fa"/>
+    <text x="230" y="484" class="label">Postprocess</text>
+    <text x="230" y="511" class="detail">Curation · Quality metrics</text>
+
+    <rect x="52" y="554" width="356" height="94" rx="12" fill="#172c4d" stroke="#60a5fa"/>
+    <text x="230" y="588" class="label">Phy / CellExplorer</text>
+    <text x="230" y="618" class="detail">Sorted units · Analysis metadata</text>
+
+    <rect x="482" y="146" width="344" height="78" rx="12" fill="#163638" stroke="#4b8280"/>
+    <text x="654" y="178" class="label">Video + tracking</text>
+    <text x="654" y="205" class="detail">Keypoints · DLC · CSV / H5</text>
+
+    <rect x="482" y="248" width="344" height="78" rx="12" fill="url(#behavior)" stroke="#2dd4bf"/>
+    <text x="654" y="280" class="label">Calibration</text>
+    <text x="654" y="307" class="detail">Pixels → centimeters</text>
+
+    <rect x="482" y="350" width="344" height="96" rx="12" fill="url(#behavior)" stroke="#2dd4bf"/>
+    <text x="654" y="383" class="label">Behavior processing</text>
+    <text x="654" y="410" class="detail">Align tracking to recording time</text>
+    <text x="654" y="434" class="detail">Position · Speed</text>
+
+    <rect x="482" y="554" width="344" height="94" rx="12" fill="#123c3a" stroke="#2dd4bf"/>
+    <text x="654" y="584" class="label">Behavior output</text>
+    <text x="654" y="610" class="detail">Position (cm) · Speed (cm/s)</text>
+    <text x="654" y="633" class="file">&lt;basename&gt;.animal.behavior.mat</text>
+  </g>
+
+  <path d="M230 224 V246" class="flow"/>
+  <path d="M230 326 V348" class="flow"/>
+  <path d="M230 428 V450" class="flow"/>
+  <path d="M230 530 V552" class="flow"/>
+  <path d="M654 224 V246" class="flow"/>
+  <path d="M654 326 V348" class="flow"/>
+  <path d="M654 446 V552" class="flow"/>
+  <path d="M408 287 H448 V398 H480" fill="none" stroke="#5eead4" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#sync-arrow)"/>
+  <text x="420" y="276" fill="#5eead4" font-size="13" font-weight="600">Sync</text>
+  <text x="52" y="675" class="subtitle">Single-day or multi-day · Local or Slurm</text>
+  <text x="32" y="727" class="subtitle">Dashed link: exported camera events synchronize tracking to recording time.</text>
+</svg>
