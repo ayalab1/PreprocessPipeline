@@ -289,3 +289,27 @@ CLI and output-transfer regressions; leave runtime source and test inputs alone.
 - Review only the new manifest/documentation diff and rerun the same bounded CI
   job through the corrective push. No local environment repair or broader
   validation is needed.
+- Corrective run 36812682765 at head `a77a0ec` succeeded: **16 passed in 27.05 s**,
+  with Neo 0.14.4 installed. Channel/Phy took 18.42 s, mixed preprocessing 0.30 s
+  and transfer 0.11 s. The job completed its cleanup/cache steps successfully.
+
+### Scope clarification: basic checks for incoming PRs
+
+The user wants CI to detect basic regressions when other contributors open PRs.
+Extend the one Windows job with existing short setup, Intan input-validation,
+disk-space and input-identity modules, plus the two existing move failure/content-
+corruption regressions. Keep the CLI/channel/Phy/mixed-input cases and successful
+transfer regression. All selected files are tracked, and tests use small inputs
+or test doubles; no new tests or full-suite selection is needed.
+
+1. Make the selected paths explicit in the workflow and rename the job to
+   `Windows basic checks` to reflect its purpose.
+2. Update the CI scope documentation and keep ordinary `pull_request` triggering
+   with read-only permission for incoming contributions.
+3. Push this selection, collect the bounded CI result, and record actual failures
+   or limitations without expanding into scientific or real-data validation.
+
+All selected modules and the vendored sorter setup metadata they inspect are
+tracked. Reviewed the new selection/PowerShell array and documentation diff.
+No local test run was added; the expanded selection will be validated by the
+same single Windows CI job. The earlier corrected 16-case run is passing.

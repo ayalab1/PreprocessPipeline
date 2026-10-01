@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   windows-tests:
-    name: Windows CLI and output transfer
+    name: Windows basic checks
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:
@@ -51,7 +51,17 @@ jobs:
           $ciTestExit = 1
           try {
               $env:NUMBA_CACHE_DIR = Join-Path $ciResolvedRoot 'n'
-              python -m pytest tests/cli tests/gui/test_gui_move_outputs.py::test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata -q -p no:cacheprovider --basetemp (Join-Path $ciResolvedRoot 'p') --durations=5
+              $ciTests = @(
+                  'tests/cli',
+                  'tests/setup',
+                  'tests/preprocess/test_intan_validation.py',
+                  'tests/preprocess/test_disk_space.py',
+                  'tests/execution/test_input_identity.py',
+                  'tests/gui/test_gui_move_outputs.py::test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata',
+                  'tests/gui/test_gui_move_outputs.py::test_move_failure_keeps_source_and_destination_unchanged',
+                  'tests/gui/test_gui_move_outputs.py::test_move_rejects_equal_size_staging_corruption_before_source_deletion'
+              )
+              python -m pytest @ciTests -q -p no:cacheprovider --basetemp (Join-Path $ciResolvedRoot 'p') --durations=5
               $ciTestExit = $LASTEXITCODE
           } finally {
               $env:NUMBA_CACHE_DIR = $ciOldNumbaCache

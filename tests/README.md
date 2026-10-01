@@ -29,11 +29,20 @@ Windows ACLs. Symlink tests require permission to create symlinks.
 
 ## GitHub Actions
 
-`.github/workflows/windows-tests.yml` runs one Windows/Python 3.11 job on pull
-requests and pushes to `main`. It selects `tests/cli`, including the two small
-synthetic integration cases, and
-`test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata`.
-It installs the project/dev dependencies from `pyproject.toml`, keeping NumPy
+`.github/workflows/windows-tests.yml` runs one Windows/Python 3.11 job named
+`Windows basic checks` on pull requests and pushes to `main`. It selects:
+
+- `tests/cli`, including the two small channel/Phy and mixed-acquisition cases.
+- `tests/setup`, for environment configuration and setup safety.
+- `tests/preprocess/test_intan_validation.py`, for malformed input rejection and
+  preservation of input data.
+- `tests/preprocess/test_disk_space.py`, for disk budgets and early rejection.
+- `tests/execution/test_input_identity.py`, for input identity and resume checks.
+- Three named output-transfer tests: recovery paths/custom metadata/progress,
+  copy-failure preservation, and equal-size copy-corruption rejection.
+
+These checks run for incoming contributors' PRs as well as the maintainer's PRs.
+The job installs the project/dev dependencies from `pyproject.toml`, keeping NumPy
 at the existing Windows environment baseline. Pip downloads are cached.
 The project constrains Neo to `>=0.14.3,<0.14.5` because SpikeInterface 0.103.2
 passes an Open Ephys reader argument removed in Neo 0.14.5. The Windows Conda
