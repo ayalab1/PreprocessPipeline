@@ -272,3 +272,20 @@ CLI and output-transfer regressions; leave runtime source and test inputs alone.
 - CI execution is pending the first push of this checkpoint. The PR Checks tab
   records each run against its commit; report its observed result in the PR
   validation section rather than treating configuration inspection as CI success.
+
+### First CI result and dependency correction
+
+- GitHub Actions run 36812290670 at head `5c52f8b` executed all selected cases:
+  **15 passed, 1 failed in 26.24 s**. The mixed Intan/OE/WILD case failed while
+  constructing the OE reader: Neo 0.14.5 rejects `load_sync_channel`, which the
+  pinned SpikeInterface 0.103.2 passes to `OpenEphysBinaryRawIO`.
+- Verified the actual installed local Neo 0.14.4 API and upstream 0.14.4/0.14.5
+  reader signatures plus SI 0.103.2's argument mapping. Its declared minimum
+  Neo version is 0.14.3; the Linux manifest already pins that version.
+- This concrete CI failure extends the scope to the relevant dependency
+  manifests: constrain project Neo to `>=0.14.3,<0.14.5` and explicitly pin
+  Windows Conda Neo to the working local 0.14.4 baseline. Leave the Linux pin,
+  reader source, test assertions/inputs and numerical settings unchanged.
+- Review only the new manifest/documentation diff and rerun the same bounded CI
+  job through the corrective push. No local environment repair or broader
+  validation is needed.
