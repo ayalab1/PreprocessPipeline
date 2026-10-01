@@ -353,3 +353,14 @@ no runtime source, scientific settings, dependency manifests or test edits.
   QtGui requires `libEGL.so.1`, absent from the hosted Ubuntu image. Add only the
   corresponding `libegl1` runtime package to the Linux job and rerun the same
   selection; keep the tests and runtime source unchanged.
+
+- Corrected run 36816493198 at `a4ad71c` succeeded on both platforms: **Linux
+  67 passed in 17.27 s; Windows 67 passed in 26.62 s**, with 10 warnings per
+  platform. Qt installation, dependency installation, test execution, temporary
+  cleanup and cache steps succeeded. Reviewed the focused workflow/documentation
+  diff; no runtime source, tests or dependency manifests changed.
+- The shared workflow now runs the same bounded regressions for incoming PRs on
+  both OSes. This completion update changes only this record; CI evidence above
+  identifies the verified implementation commit. No local tests, full suite,
+  production-server environment, Slurm, GPU sorting, MATLAB, real-data processing
+  or interactive GUI validation was performed for this follow-up.
