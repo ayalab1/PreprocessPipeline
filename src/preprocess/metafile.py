@@ -100,6 +100,10 @@ class PreprocessConfig:
             "progress_bar": True,
         }
     )
+    camera_adc_channel: int | None = None
+    camera_sync_auto: bool = False
+    camera_fps: float = 40.0
+    camera_pulses_delta_range: float = 0.01
 
 
 @dataclass
@@ -169,6 +173,7 @@ class AcquisitionCatalog:
     ephys_sampling_frequencies_by_subsession: list[float | None] = field(default_factory=list)
     analog_sample_counts_by_subsession: list[int | None] = field(default_factory=list)
     analog_sampling_frequencies_by_subsession: list[float | None] = field(default_factory=list)
+    adc_gains_volts_by_subsession: list[list[float | None]] = field(default_factory=list)
 
 
 @dataclass

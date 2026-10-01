@@ -109,15 +109,33 @@ def _normalize_channel_indices(channels: list[int] | None, n_channels: int) -> l
     return normalized
 
 
+def _decode_analog_counts(
+    raw: np.ndarray, openephys_adc_epochs: list[tuple[int, int, list[float]]] | None,
+) -> np.ndarray:
+    """Recover signed OE counts without modifying the sidecar's stored words."""
+    decoded = raw.astype(np.float64)
+    for start, stop, _gains in openephys_adc_epochs or []:
+        decoded[start:stop] = raw[start:stop].view(np.int16)
+    return decoded
+
+
 def _build_analog_behavior_struct(
     *,
     analog_data_u16: np.ndarray,
     active_channels_1based: list[int],
     sampling_rate: float = ANALOG_BEHAVIOR_DEFAULT_FS,
     interval_start: float = 0.0,
+    openephys_adc_epochs: list[tuple[int, int, list[float]]] | None = None,
 ) -> dict[str, Any]:
     n_samples = int(analog_data_u16.shape[0])
-    scaled = (analog_data_u16.astype(np.float64) - 6800.0) * 5.0 / (59000.0 - 6800.0)
+    scaled = analog_data_u16.astype(np.float64)
+    scaled -= 6800.0
+    scaled *= 5.0
+    scaled /= 59000.0 - 6800.0
+    for start, stop, gains in openephys_adc_epochs or []:
+        for pos in range(start, stop, 1_000_000):
+            end = min(pos + 1_000_000, stop)
+            scaled[pos:end] = analog_data_u16[pos:end].view(np.int16).astype(np.float64) * gains
 
     timestamps = (np.arange(1, n_samples + 1, dtype=np.float64) / float(sampling_rate)).reshape(-1, 1)
     if interval_start > 0:
@@ -125,7 +143,7 @@ def _build_analog_behavior_struct(
         timestamps = timestamps - 1.0 / float(sampling_rate)
     duration = float(n_samples) / float(sampling_rate)
 
-    return {
+    analog_inp = {
         "Filename": "analogin.dat",
         "data": scaled,
         "timestamps": timestamps,
@@ -135,6 +153,11 @@ def _build_analog_behavior_struct(
         "duration": duration,
         "region": "analog",
     }
+    if openephys_adc_epochs:
+        analog_inp["adcDecoding"] = "openephys_signed_int16"
+        analog_inp["adcSignedEpochSamples"] = np.asarray([(s, e) for s, e, _g in openephys_adc_epochs])
+        analog_inp["units"] = "V"
+    return analog_inp
 
 
 def _find_rising_falling_edges_matlab(binary: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -210,6 +233,24 @@ def _effectiveness_metric(signal: np.ndarray) -> float:
     return 1.0 - (pu * vu + pl * vl) / v
 
 
+def _camera_cadence_matches(
+    signal: np.ndarray, threshold: float, sr: float, fps: float, tolerance: float,
+    epochs: list[tuple[int, int, list[float]]],
+    fps_by_epoch: list[float] | None = None,
+) -> bool:
+    """Check bounded native-rate windows for a regular camera frame clock."""
+    if fps <= 0:
+        return False
+    window = max(1, int(10 * sr))
+    for idx, (start, stop, _gains) in enumerate(epochs):
+        epoch_fps = fps_by_epoch[idx] if fps_by_epoch is not None else fps
+        for pos in (start, max(start, (start + stop - window) // 2), max(start, stop - window)):
+            rising, _falling = _find_rising_falling_edges_matlab(signal[pos:min(pos + window, stop)] > threshold)
+            if rising.size >= 3 and np.all(np.abs(np.diff(rising) * epoch_fps / sr - 1.0) <= tolerance):
+                return True
+    return False
+
+
 def _detect_analog_pulses(
     *,
     analog_data_u16: np.ndarray,
@@ -218,13 +259,22 @@ def _detect_analog_pulses(
     merge_timestamps_sec: np.ndarray | None,
     min_dur_sec: float | None = None,
     sess_epochs_1based: list[int] | None = None,
-) -> dict[str, np.ndarray] | None:
+    openephys_adc_epochs: list[tuple[int, int, list[float]]] | None = None,
+    camera_adc_channel: int | None = None,
+    camera_sync_auto: bool = False,
+    camera_fps: float = 40.0,
+    camera_pulses_delta_range: float = 0.01,
+    camera_fps_by_epoch: list[float] | None = None,
+) -> dict[str, Any] | None:
     pul_rows: list[np.ndarray] = []
     amp_rows: list[np.ndarray] = []
     dur_rows: list[np.ndarray] = []
     event_id_rows: list[np.ndarray] = []
     channel_rows: list[np.ndarray] = []
     period_rows: list[np.ndarray] = []
+    camera_threshold_info: dict[str, Any] = {}
+    candidate_channels: list[int] = []
+    candidate_thresholds: list[float] = []
 
     n_cols = int(analog_data_u16.shape[1]) if analog_data_u16.ndim == 2 else 0
     if n_cols <= 0:
@@ -235,7 +285,7 @@ def _detect_analog_pulses(
         if col_idx < 0 or col_idx >= n_cols:
             continue
 
-        d = analog_data_u16[:, col_idx].astype(np.float64)
+        d = _decode_analog_counts(analog_data_u16[:, col_idx], openephys_adc_epochs)
         d = _baseline_correct_by_epochs(d, merge_timestamps_sec, sr=sr)
 
         em_values: list[float] = []
@@ -259,6 +309,32 @@ def _detect_analog_pulses(
         thr = float(150.0 * np.median(sampled)) if sampled.size else 0.0
         if thr == 0.0 or not np.any(d > thr):
             thr = float(4.5 * np.std(d)) if d.size else 0.0
+
+        is_camera = ch1 == camera_adc_channel
+        if openephys_adc_epochs and camera_sync_auto:
+            low, high = float(np.min(d)), float(np.max(d))
+            probe_threshold = thr if thr < high else 0.5 * (low + high)
+            is_camera = is_camera or (high > low and _camera_cadence_matches(
+                d, probe_threshold, sr, camera_fps, camera_pulses_delta_range, openephys_adc_epochs,
+                camera_fps_by_epoch,
+            ))
+        if openephys_adc_epochs and is_camera:
+            method = "legacy"
+            low, high = float(np.min(d)), float(np.max(d))
+            # A camera sync signal is a two-level electrical signal. A standard
+            # deviation threshold can exceed its High level when pulse duty
+            # cycle is large; recover only selected or cadence-matching inputs.
+            if high > low and thr >= high:
+                thr = 0.5 * (low + high)
+                method = "midrange_unreachable_legacy_threshold"
+            candidate_channels.append(int(ch1))
+            candidate_thresholds.append(float(thr))
+            if ch1 == camera_adc_channel:
+                camera_threshold_info = {
+                    "cameraAdcChannel": int(ch1),
+                    "cameraThreshold": float(thr),
+                    "cameraThresholdMethod": method,
+                }
 
         d_bin = d > thr
         on_idx, off_idx = _find_rising_falling_edges_matlab(d_bin)
@@ -312,6 +388,17 @@ def _detect_analog_pulses(
         "analogChannel": np.vstack(channel_rows).astype(np.float64),
         "intsPeriods": np.vstack(period_rows).astype(np.float64) if period_rows else np.empty((0, 2), dtype=np.float64),
     }
+    if openephys_adc_epochs:
+        pulses["adcDecoding"] = "openephys_signed_int16"
+        pulses["adcSignedEpochSamples"] = np.asarray([(s, e) for s, e, _g in openephys_adc_epochs])
+        pulses.update(camera_threshold_info)
+        pulses["cameraSyncAuto"] = bool(camera_sync_auto)
+        pulses["cameraCandidateChannels"] = np.asarray(candidate_channels, dtype=np.float64)
+        pulses["cameraCandidateThresholds"] = np.asarray(candidate_thresholds, dtype=np.float64)
+        if camera_sync_auto:
+            pulses["cameraSyncFps"] = float(camera_fps)
+            pulses["cameraSyncTolerance"] = float(camera_pulses_delta_range)
+            pulses["cameraSyncFpsByEpoch"] = np.asarray(camera_fps_by_epoch or [], dtype=np.float64)
 
     sort_idx = np.argsort(pulses["timestamps"][:, 0], kind="mergesort")
     for key in ("timestamps", "amplitude", "duration", "eventGroupID", "analogChannel"):
@@ -498,7 +585,11 @@ def _build_digital_in_struct(
     )
 
 
-def _save_analog_plot(output_dir: Path, analog_data_u16: np.ndarray, channel_ids_1based: list[int], sr: float, *, overwrite: bool) -> None:
+def _save_analog_plot(
+    output_dir: Path, analog_data_u16: np.ndarray, channel_ids_1based: list[int], sr: float,
+    *, overwrite: bool,
+    openephys_adc_epochs: list[tuple[int, int, list[float]]] | None = None,
+) -> None:
     out_dir = output_dir / "pulses"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "analogPulsesDetection.png"
@@ -516,6 +607,11 @@ def _save_analog_plot(output_dir: Path, analog_data_u16: np.ndarray, channel_ids
         return
     step = max(1, n_samples // 5000)
     xt = np.arange(0, n_samples, step, dtype=np.float64) / float(sr)
+    sampled_epochs = [
+        ((start + step - 1) // step, (stop + step - 1) // step, gains)
+        for start, stop, gains in openephys_adc_epochs or []
+    ]
+    sampled = _decode_analog_counts(analog_data_u16[::step], sampled_epochs)
 
     n_show = min(max(1, len(channel_ids_1based)), 8)
     fig, axes = plt.subplots(n_show, 1, figsize=(12, 2.2 * n_show), sharex=True)
@@ -523,7 +619,7 @@ def _save_analog_plot(output_dir: Path, analog_data_u16: np.ndarray, channel_ids
         axes = [axes]
     for i in range(n_show):
         col = i if i < analog_data_u16.shape[1] else 0
-        axes[i].plot(xt, analog_data_u16[::step, col], linewidth=0.6)
+        axes[i].plot(xt, sampled[:, col], linewidth=0.6)
         axes[i].set_ylabel(f"Ch{channel_ids_1based[i] if i < len(channel_ids_1based) else i + 1}")
     axes[-1].set_xlabel("s")
     fig.tight_layout()
@@ -596,6 +692,12 @@ def export_analog_digital_events(
     pulse_sess_epochs_1based: list[int] | None = None,
     openephys_ttl_paths: list[Path] | None = None,
     openephys_sample_counts: list[int] | None = None,
+    openephys_adc_epochs: list[tuple[int, int, list[float]]] | None = None,
+    camera_adc_channel: int | None = None,
+    camera_sync_auto: bool = False,
+    camera_fps: float = 40.0,
+    camera_pulses_delta_range: float = 0.01,
+    camera_fps_by_epoch: list[float] | None = None,
 ) -> tuple[list[Path], list[Path]]:
     if analog_channels:
         _normalize_channel_indices(analog_channels, max(int(analog_num_channels), 1))
@@ -611,9 +713,27 @@ def export_analog_digital_events(
         behavior_out = output_dir / f"{basename}.analogInput.behavior.mat"
         pulses_out = output_dir / f"{basename}.pulses.events.mat"
         if not overwrite and behavior_out.exists():
-            validate_mat_output(behavior_out, "analogInp")
+            saved = validate_mat_output(behavior_out, "analogInp")
+            if openephys_adc_epochs and saved["analogInp"].get("adcDecoding") != "openephys_signed_int16":
+                raise ValueError(f"{behavior_out} predates signed OE ADC decoding; rerun analog inputs with overwrite enabled.")
         if not overwrite and pulses_out.exists():
-            validate_mat_output(pulses_out, "pulses")
+            saved = validate_mat_output(pulses_out, "pulses")
+            if saved["pulses"].get("cameraSyncOnly", False):
+                raise ValueError(f"{pulses_out} contains camera sync only; full analog inputs require overwrite enabled.")
+            if openephys_adc_epochs and saved["pulses"].get("adcDecoding") != "openephys_signed_int16":
+                raise ValueError(f"{pulses_out} predates signed OE ADC decoding; rerun analog inputs with overwrite enabled.")
+            if openephys_adc_epochs and camera_adc_channel is not None and saved["pulses"].get("cameraAdcChannel") != camera_adc_channel:
+                raise ValueError(f"{pulses_out} was not generated for camera ADC {camera_adc_channel}; rerun analog inputs with overwrite enabled.")
+            if openephys_adc_epochs and camera_sync_auto and (
+                not saved["pulses"].get("cameraSyncAuto", False)
+                or saved["pulses"].get("cameraSyncFps") != camera_fps
+                or saved["pulses"].get("cameraSyncTolerance") != camera_pulses_delta_range
+                or not np.array_equal(
+                    np.asarray(saved["pulses"].get("cameraSyncFpsByEpoch", [])).reshape(-1),
+                    np.asarray(camera_fps_by_epoch or []),
+                )
+            ):
+                raise ValueError(f"{pulses_out} predates the current automatic camera sync settings; rerun analog inputs with overwrite enabled.")
         need_behavior = overwrite or not behavior_out.exists()
         need_pulses = overwrite or not pulses_out.exists()
 
@@ -630,15 +750,21 @@ def export_analog_digital_events(
                 if analog_active_channels_1based
                 else [i + 1 for i in range(n_ch)]
             )
+            if camera_adc_channel is not None and camera_adc_channel not in active_channels_1based:
+                raise ValueError(f"Camera ADC {camera_adc_channel} is not present in {active_channels_1based}")
 
             analog_inp = _build_analog_behavior_struct(
                 analog_data_u16=analog_data,
                 active_channels_1based=active_channels_1based,
-                sampling_rate=ANALOG_BEHAVIOR_DEFAULT_FS,
+                sampling_rate=analog_sr_eff if openephys_adc_epochs else ANALOG_BEHAVIOR_DEFAULT_FS,
+                openephys_adc_epochs=openephys_adc_epochs,
             )
             if need_behavior:
                 atomic_savemat(behavior_out, {"analogInp": analog_inp}, required_key="analogInp")
-            _save_analog_plot(output_dir, analog_data, active_channels_1based, analog_sr_eff, overwrite=overwrite)
+            _save_analog_plot(
+                output_dir, analog_data, active_channels_1based, analog_sr_eff,
+                overwrite=overwrite, openephys_adc_epochs=openephys_adc_epochs,
+            )
 
             pulses = _detect_analog_pulses(
                 analog_data_u16=analog_data,
@@ -647,6 +773,11 @@ def export_analog_digital_events(
                 merge_timestamps_sec=merge_timestamps_sec,
                 min_dur_sec=pulse_min_dur_sec,
                 sess_epochs_1based=pulse_sess_epochs_1based,
+                openephys_adc_epochs=openephys_adc_epochs,
+                camera_adc_channel=camera_adc_channel,
+                camera_sync_auto=camera_sync_auto, camera_fps=camera_fps,
+                camera_pulses_delta_range=camera_pulses_delta_range,
+                camera_fps_by_epoch=camera_fps_by_epoch,
             )
             if pulses is None:
                 if overwrite and pulses_out.exists():

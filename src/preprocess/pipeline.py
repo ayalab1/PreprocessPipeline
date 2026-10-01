@@ -9,8 +9,10 @@ import spikeinterface.extractors as se
 from .artifact_removal import detect_high_amplitude_artifacts, remove_artifacts
 from .io import atomic_savemat
 from .events import export_analog_digital_events, materialize_intermediate_dat
+from .behavior import _find_video_file, _read_video_fps
 from .io import (
     build_acquisition_catalog,
+    _openephys_adc_epochs,
     discover_subsessions,
     ensure_rhd,
     ensure_xml,
@@ -802,6 +804,13 @@ def run_preprocess_session(
         elif ttl_channel_0based not in digital_channels_for_export:
             digital_channels_for_export = [*digital_channels_for_export, ttl_channel_0based]
 
+    camera_fps_by_epoch = None
+    if config.analog_inputs and config.camera_sync_auto:
+        camera_fps_by_epoch = [
+            _read_video_fps(_find_video_file(basepath / name)) or config.camera_fps
+            for idx, name in enumerate(catalog.subsession_names)
+            if catalog_source_types[idx] == "openephys" and catalog.source_adc_channels[idx] > 0
+        ]
     _step("Export analog/digital events")
     analog_event_paths, digital_event_paths = export_analog_digital_events(
         output_dir=output_dir,
@@ -831,6 +840,15 @@ def run_preprocess_session(
         overwrite=config.overwrite,
         openephys_ttl_paths=openephys_ttl_paths,
         openephys_sample_counts=openephys_sample_counts,
+        openephys_adc_epochs=(
+            _openephys_adc_epochs(catalog, analog_output_sample_counts)
+            if config.analog_inputs and any(t == "openephys" for t in catalog_source_types)
+            else None
+        ),
+        camera_adc_channel=config.camera_adc_channel,
+        camera_sync_auto=config.camera_sync_auto, camera_fps=config.camera_fps,
+        camera_pulses_delta_range=config.camera_pulses_delta_range,
+        camera_fps_by_epoch=camera_fps_by_epoch,
     )
 
     _step("Load and concatenate amplifier dat")

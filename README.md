@@ -20,6 +20,41 @@ raw recordings
 - **Multi-day processing:** combine selected days and subepochs while preserving their order and per-recording channel metadata.
 - **Persistent execution:** run locally or through Slurm and reconnect from the GUI after it is closed.
 
+The **Behavior** tab accepts keypoint tracking CSV/H5 files, including `keypoints.csv`, in each
+recording subfolder. Use **Discover tracking files**, select a bodypart, and calibrate
+the video before previewing or exporting behavior in centimeters. Discovery prefers
+filtered DLC files, then named DLC outputs, then the final `keypoints.csv`,
+before generic H5/CSV files. Adjacent raw/processing H5 files are not used
+when `keypoints.csv` is available. Rows with missing coordinates are retained for
+camera TTL matching. The likelihood threshold defaults to 0; saved thresholds and
+interpolation settings still apply.
+
+**Camera sync input** defaults to **Auto detect**. Discovery compares recorded Digital
+and Analog input channels against video frame rate and tracking frame count. A unique
+matching input is shown as, for example, **Auto → Analog (ADC1)**. If multiple inputs
+match, select an input by name; selection is saved with the configuration. ADC sync
+requires exported analog pulses (`analog_inputs` enabled) in `<basename>.pulses.events.mat`.
+Behavior uses measured pulse onsets and preserves merged session time offsets. Raw ADC
+signals are not extracted by the Behavior tab. Video preview requires the declared
+`imageio` and `imageio-ffmpeg` packages (or OpenCV) in the GUI's Python environment.
+
+For Open Ephys, **Preprocess → analog inputs** prepares camera candidates without
+requiring tracking files. Auto checks bounded native-rate windows against each video's
+frame rate (or the fallback video FPS setting if unavailable); an explicit Analog input selection
+is also used during event export. ADC sidecar words are decoded as signed int16 for OE epochs; continuous
+exports use `structure.oebin` voltage gains and the ADC sampling rate. Intan decoding
+and scaling remain unchanged. If the legacy pulse threshold exceeds the waveform's
+High level, only an explicitly selected or cadence-matching camera candidate uses the
+waveform's global midrange threshold. Candidate channels and thresholds are saved in
+the pulse events; final source selection occurs against tracking/video in Behavior. Existing
+OE analog exports without the decoding metadata require an explicit overwrite.
+
+For the already processed RM018 day33 session, run
+`python scripts/run_rm018_day33_analog_inputs.py --repair-events-only` in the activated
+preprocess environment. It reads the existing local analog sidecar and writes camera
+ADC1 events and a sync report to `preprocess_tmp/RM018_day33_260611/adc_signed_repair`;
+it does not overwrite the original sidecar or previously exported events.
+
 ## Intan input validation
 
 Before event export or concatenation, each selected raw recording is checked

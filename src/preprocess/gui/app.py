@@ -62,6 +62,7 @@ from matplotlib.patches import Rectangle
 from src.preprocess.behavior import (
     dlc_point_names,
     discover_dlc_files,
+    discover_camera_sync_candidates,
     inspect_dlc_ttl_sync,
     load_representative_frame,
     load_dlc_tracking,
@@ -3273,12 +3274,12 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setSpacing(8)
 
-        options = QGroupBox("Behavior export")
+        options = QGroupBox("Tracking script")
         options_form = self._form_layout(options)
         self.behavior_enabled = QCheckBox("enable behavior export")
         self.behavior_enabled.setChecked(True)
         self.behavior_enabled.setVisible(False)
-        self.behavior_overwrite = QCheckBox("overwrite behavior output")
+        self.behavior_overwrite = QCheckBox("Overwrite existing Behavior output")
         self.behavior_clean_jumps = QCheckBox("clean tracker jumps")
         self.behavior_clean_jumps.setChecked(True)
         self.behavior_clean_jumps.setVisible(False)
@@ -3286,30 +3287,38 @@ class MainWindow(QMainWindow):
         self.behavior_dlc_batch_path.setPlaceholderText("optional DLC batch/script path")
         browse_batch = QPushButton("Browse")
         browse_batch.clicked.connect(self._browse_behavior_dlc_batch)
-        options_form.addRow(self.behavior_overwrite)
         options_form.addRow("DLC batch/script", self._field_with_button(self.behavior_dlc_batch_path, browse_batch))
 
-        dlc = QGroupBox("DLC detection")
+        dlc = QGroupBox("Keypoint tracking")
         dlc_form = self._form_layout(dlc)
         self.behavior_primary_coords = self._spin(1, 128, 2)
         self.behavior_primary_coords.setVisible(False)
         self.behavior_primary_point = NoWheelComboBox()
-        self.behavior_primary_point.addItem("Discover DLC files first", "")
+        self.behavior_primary_point.addItem("Discover tracking files first", "")
         self.behavior_primary_point.currentIndexChanged.connect(self._on_behavior_primary_point_changed)
-        self.behavior_likelihood = self._double_spin(0.0, 1.0, 0.6)
+        self.behavior_likelihood = self._double_spin(0.0, 1.0, 0.0)
         self.behavior_ttl_tolerance = self._double_spin(0.0, 1.0, 0.01)
         self.behavior_ttl_tolerance.setToolTip(
             "Fractional tolerance for removing camera TTL intervals shorter than one video frame. "
             "0.010 means pulses closer than 99% of the expected frame interval are treated as extra pulses."
         )
         self.behavior_fallback_fps = self._double_spin(0.001, 1000.0, 40.0)
-        discover = QPushButton("Discover DLC files")
+        self.behavior_camera_sync = NoWheelComboBox()
+        self.behavior_camera_sync.addItem("Auto detect", "auto")
+        self.behavior_camera_sync.setToolTip(
+            "Match recorded Digital/Analog inputs to video timing automatically. "
+            "Discover tracking files to list recorded inputs. Choose an input from the "
+            "dropdown when needed; Auto detect requires one matching input per recording."
+        )
+        self.behavior_camera_sync.currentIndexChanged.connect(self._on_behavior_sync_input_changed)
+        discover = QPushButton("Discover tracking files")
         discover.clicked.connect(self._discover_behavior_dlc)
         self.behavior_dlc_summary = QPlainTextEdit()
         self.behavior_dlc_summary.setReadOnly(True)
         self.behavior_dlc_summary.setMinimumHeight(110)
         self.behavior_dlc_summary.setVisible(False)
         dlc_form.addRow("tracking point", self.behavior_primary_point)
+        dlc_form.addRow("Camera sync input", self.behavior_camera_sync)
         dlc_form.addRow("likelihood threshold", self.behavior_likelihood)
         dlc_form.addRow("TTL duplicate tolerance", self.behavior_ttl_tolerance)
         dlc_form.addRow("fallback video FPS (Hz)", self.behavior_fallback_fps)
@@ -3318,14 +3327,16 @@ class MainWindow(QMainWindow):
         self.behavior_distance_cm = self._double_spin(0.001, 1_000_000.0, 100.0)
         self.behavior_pixel_distance = self._double_spin(0.0, 1_000_000.0, 0.0)
         self.behavior_pixel_distance.setVisible(False)
-        self.behavior_gap_sec = self._double_spin(0.0, 3600.0, 1.0)
+        self.behavior_gap_sec = self._double_spin(0.0, 3600.0, 0.0)
 
-        run = QGroupBox("Run")
+        run = QGroupBox("Export")
         run_form = self._form_layout(run)
-        run_behavior = QPushButton("Export behavior to local")
+        run_behavior = QPushButton("Export Behavior")
+        run_behavior.setToolTip("Save the Behavior MAT file in the selected working output directory.")
         run_behavior.setObjectName("primaryButton")
         run_behavior.clicked.connect(self._run_behavior_export)
         self.run_behavior = run_behavior
+        run_form.addRow(self.behavior_overwrite)
         run_form.addRow(run_behavior)
 
         for widget in [
@@ -3338,6 +3349,7 @@ class MainWindow(QMainWindow):
             self.behavior_likelihood,
             self.behavior_ttl_tolerance,
             self.behavior_fallback_fps,
+            self.behavior_camera_sync,
             self.behavior_distance_cm,
             self.behavior_pixel_distance,
             self.behavior_gap_sec,
@@ -3567,7 +3579,7 @@ class MainWindow(QMainWindow):
         self.behavior_mode_tabs.addTab(calibration_page, "Calibration")
         self.behavior_mode_tabs.addTab(outlier_page, "Outlier cleanup & interpolation")
         self.behavior_mode_tabs.currentChanged.connect(self._on_behavior_mode_tab_changed)
-        self.behavior_preview_status = QLabel("Discover DLC files to load epoch frames")
+        self.behavior_preview_status = QLabel("Discover tracking files to load epoch frames")
         self.behavior_preview_status.setWordWrap(True)
         self.behavior_preview_status.setVisible(False)
         behavior_layout.addWidget(behavior_head)
@@ -5395,14 +5407,75 @@ class MainWindow(QMainWindow):
             raise ValueError("local output directory cannot be resolved.")
         return settings, basepath, basename, local_output
 
+    @staticmethod
+    def _behavior_sync_label(selection: str) -> str:
+        if selection == "auto":
+            return "Auto detect"
+        source, channel = selection.split(":")
+        return f"Analog (ADC{channel})" if source == "adc" else f"Digital (TTL{int(channel) - 1})"
+
+    def _set_behavior_sync_selection(self, selection: str) -> None:
+        index = self.behavior_camera_sync.findData(selection)
+        if index < 0:
+            self.behavior_camera_sync.addItem(self._behavior_sync_label(selection), selection)
+            index = self.behavior_camera_sync.findData(selection)
+        self.behavior_camera_sync.setCurrentIndex(index)
+
+    def _populate_behavior_sync_inputs(self, files: list[Any]) -> None:
+        settings, basepath, basename, output = self._behavior_paths()
+        b = settings.behavior
+        found = discover_camera_sync_candidates(
+            basepath, output_dir=output, basename=basename, dlc_files=files,
+            fallback_video_fps=b.fallback_video_fps, pulses_delta_range=b.pulses_delta_range,
+        )
+        selected = str(self.behavior_camera_sync.currentData() or "auto")
+        choices: dict[str, Any] = {}
+        automatic: list[Any] = []
+        for name, (all_inputs, matching) in found.items():
+            for candidate in all_inputs:
+                choices[candidate.key] = candidate
+            if len(matching) == 1:
+                automatic.append(matching[0])
+                if selected == "auto":
+                    self._append_log(f"Camera sync: {name}: Auto → {matching[0].label} ({matching[0].timestamps.size} pulses)\n")
+        auto_label = "Auto detect"
+        if found and len(automatic) == len(found) and len({c.key for c in automatic}) == 1:
+            auto_label = f"Auto → {automatic[0].label}"
+        self.behavior_camera_sync.blockSignals(True)
+        try:
+            self.behavior_camera_sync.clear()
+            self.behavior_camera_sync.addItem(auto_label, "auto")
+            for key, candidate in choices.items():
+                self.behavior_camera_sync.addItem(candidate.label, key)
+            self._set_behavior_sync_selection(selected)
+        finally:
+            self.behavior_camera_sync.blockSignals(False)
+
+    def _on_behavior_sync_input_changed(self, *_args: Any) -> None:
+        if self._refresh_suspended or not getattr(self, "_behavior_dlc_files", []):
+            return
+        try:
+            settings, basepath, basename, output = self._behavior_paths()
+            b = settings.behavior
+            warnings = inspect_dlc_ttl_sync(
+                basepath, output_dir=output, basename=basename, dlc_files=self._behavior_dlc_files,
+                pulses_delta_range=b.pulses_delta_range, fallback_video_fps=b.fallback_video_fps,
+                camera_sync_selection=b.camera_sync_selection,
+            )
+            self._append_behavior_warnings("Behavior sync warnings", warnings)
+            if self.behavior_mode_tabs.currentIndex() == 1:
+                self._load_behavior_outlier_preview()
+        except Exception as exc:
+            self._append_behavior_warnings("Behavior sync warnings", [str(exc)])
+
     def _discover_behavior_dlc(self) -> None:
         try:
             settings, basepath, basename, local_output = self._behavior_paths()
             files = discover_dlc_files(basepath, output_dir=local_output, basename=basename)
             if not files:
-                text = "No DLC files found."
+                text = "No keypoint tracking files found."
             else:
-                lines = [f"Found {len(files)} DLC file(s):"]
+                lines = [f"Found {len(files)} tracking file(s):"]
                 for item in files:
                     video = item.video_path.name if item.video_path is not None else "no video"
                     lines.append(f"- {item.folder_name}: {item.path.name} ({video})")
@@ -5413,6 +5486,7 @@ class MainWindow(QMainWindow):
             self._append_log(text + "\n")
             if files:
                 try:
+                    self._populate_behavior_sync_inputs(files)
                     sync_warnings = inspect_dlc_ttl_sync(
                         basepath,
                         output_dir=local_output,
@@ -5420,12 +5494,13 @@ class MainWindow(QMainWindow):
                         dlc_files=files,
                         pulses_delta_range=settings.behavior.pulses_delta_range,
                         fallback_video_fps=settings.behavior.fallback_video_fps,
+                        camera_sync_selection=settings.behavior.camera_sync_selection,
                     )
                     self._append_behavior_warnings("Behavior sync warnings", sync_warnings)
                 except Exception as sync_exc:
                     self._append_behavior_warnings("Behavior sync warnings", [f"Sync check skipped: {sync_exc}"])
         except Exception as exc:
-            QMessageBox.critical(self, "DLC discovery failed", str(exc))
+            QMessageBox.critical(self, "Tracking discovery failed", str(exc))
 
     def _reset_behavior_discovery_state(self, *_args: Any) -> None:
         if self._refresh_suspended or not hasattr(self, "behavior_frame_tabs"):
@@ -5442,12 +5517,12 @@ class MainWindow(QMainWindow):
             widget.deleteLater()
         self._clear_behavior_outlier_tabs()
         self.behavior_mode_tabs.setCurrentIndex(0)
-        self.behavior_preview_status.setText("Discover DLC files to load epoch frames")
+        self.behavior_preview_status.setText("Discover tracking files to load epoch frames")
         self.behavior_pixel_distance.setValue(0.0)
         self.behavior_primary_point.blockSignals(True)
         try:
             self.behavior_primary_point.clear()
-            self.behavior_primary_point.addItem("Discover DLC files first", "")
+            self.behavior_primary_point.addItem("Discover tracking files first", "")
         finally:
             self.behavior_primary_point.blockSignals(False)
 
@@ -5570,7 +5645,7 @@ class MainWindow(QMainWindow):
         finally:
             self.behavior_primary_point.blockSignals(False)
         if errors:
-            self._append_warning_log("DLC point discovery warnings:\n" + "\n".join(f"- {item}" for item in errors) + "\n")
+            self._append_warning_log("Tracking point discovery warnings:\n" + "\n".join(f"- {item}" for item in errors) + "\n")
 
     def _populate_behavior_frame_tabs(self, files: list[Any]) -> None:
         while self.behavior_frame_tabs.count():
@@ -5585,7 +5660,7 @@ class MainWindow(QMainWindow):
         self._clear_behavior_outlier_tabs()
         self.behavior_mode_tabs.setCurrentIndex(0)
         if not files:
-            self.behavior_preview_status.setText("No DLC files found")
+            self.behavior_preview_status.setText("No keypoint tracking files found")
             return
 
         frame_errors: list[str] = []
@@ -5593,7 +5668,7 @@ class MainWindow(QMainWindow):
             canvas = BehaviorFrameCanvas(item.folder_name, self._on_behavior_calibration_line_changed)
             self._behavior_frame_canvases[item.folder_name] = canvas
             if item.video_path is None:
-                canvas.show_message("No video found beside DLC file")
+                canvas.show_message("No video found beside tracking file")
             else:
                 try:
                     frame = load_representative_frame(item.video_path)
@@ -5656,7 +5731,7 @@ class MainWindow(QMainWindow):
         try:
             files = self._ensure_behavior_dlc_files_loaded()
             if not files:
-                raise FileNotFoundError("No DLC files found.")
+                raise FileNotFoundError("No keypoint tracking files found.")
             current = self.behavior_frame_tabs.currentWidget()
             if not isinstance(current, BehaviorFrameCanvas):
                 raise ValueError("Select a calibration epoch tab first.")
@@ -5686,7 +5761,7 @@ class MainWindow(QMainWindow):
     def _require_behavior_calibration(self) -> dict[str, float]:
         files = self._ensure_behavior_dlc_files_loaded()
         if not files:
-            raise FileNotFoundError("No DLC files found.")
+            raise FileNotFoundError("No keypoint tracking files found.")
         if not self._behavior_pixel_to_cm_ratios_by_folder:
             raise ValueError("Click two calibration endpoints and press Run calibration before this step.")
         missing = [
@@ -5701,7 +5776,7 @@ class MainWindow(QMainWindow):
     def _require_behavior_primary_point(self) -> str:
         point = str(self.behavior_primary_point.currentData() or "").strip()
         if not point:
-            raise ValueError("Select a DLC tracking point before running behavior processing.")
+            raise ValueError("Select a tracking point before running behavior processing.")
         return point
 
     def _set_behavior_clean_mask(self, mask: np.ndarray | None) -> None:
@@ -5784,6 +5859,7 @@ class MainWindow(QMainWindow):
                 pixel_to_cm_ratios_by_folder=ratios,
                 interpolate_gap_sec=0.0,
                 fallback_video_fps=b.fallback_video_fps,
+                camera_sync_selection=b.camera_sync_selection,
                 overwrite=True,
                 save_mat=False,
             )
@@ -5820,6 +5896,7 @@ class MainWindow(QMainWindow):
                 interpolate_gap_sec=b.interpolate_gap_sec,
                 clean_mask=clean_mask,
                 fallback_video_fps=b.fallback_video_fps,
+                camera_sync_selection=b.camera_sync_selection,
                 overwrite=True,
                 save_mat=False,
             )
@@ -5880,13 +5957,14 @@ class MainWindow(QMainWindow):
                 interpolate_gap_sec=b.interpolate_gap_sec,
                 clean_mask=self._behavior_clean_mask,
                 fallback_video_fps=b.fallback_video_fps,
+                camera_sync_selection=b.camera_sync_selection,
                 overwrite=True,
                 save_mat=True,
             )
             lines = [
                 "Behavior export finished",
                 f"Output: {result.output_path}",
-                f"DLC files: {len(result.dlc_files)}",
+                f"Tracking files: {len(result.dlc_files)}",
                 f"pixel_to_cm_ratio: {result.pixel_to_cm_ratio}",
                 f"outlier mask: {'applied' if self._behavior_clean_mask is not None else 'not applied'}",
             ]
@@ -6083,6 +6161,11 @@ class MainWindow(QMainWindow):
             calibration_pixel_distance=self.behavior_pixel_distance.value(),
             interpolate_gap_sec=self.behavior_gap_sec.value(),
             fallback_video_fps=self.behavior_fallback_fps.value(),
+            camera_sync_selection=str(self.behavior_camera_sync.currentData() or "auto"),
+            camera_adc_channel=(
+                int(str(self.behavior_camera_sync.currentData()).split(":")[1])
+                if str(self.behavior_camera_sync.currentData()).startswith("adc:") else 0
+            ),
             clean_tracker_jumps=self.behavior_clean_jumps.isChecked(),
             dlc_batch_path=self.behavior_dlc_batch_path.text().strip(),
             overwrite=self.behavior_overwrite.isChecked(),
@@ -6263,6 +6346,7 @@ class MainWindow(QMainWindow):
             self.behavior_likelihood.setValue(b.likelihood)
             self.behavior_ttl_tolerance.setValue(b.pulses_delta_range)
             self.behavior_fallback_fps.setValue(b.fallback_video_fps)
+            self._set_behavior_sync_selection(b.camera_sync_selection)
             self.behavior_distance_cm.setValue(b.calibration_distance_cm)
             self.behavior_pixel_distance.setValue(b.calibration_pixel_distance)
             self.behavior_gap_sec.setValue(b.interpolate_gap_sec)

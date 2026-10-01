@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 import os
 import shutil
@@ -346,6 +346,7 @@ class OpenEphysStreamInfo:
     adc_channel_indices: list[int]
     ephys_channel_names: list[str]
     adc_channel_names: list[str]
+    adc_gains_volts: list[float | None] = field(default_factory=list)
 
     def __iter__(self):
         """Preserve the historical 5-tuple unpacking contract."""
@@ -1500,6 +1501,14 @@ def _resolve_openephys_stream_info(recording_root: Path) -> OpenEphysStreamInfo:
         )
 
     entry, ephys_indices, adc_indices, ephys_names, adc_names = ephys_candidates[0]
+    unit_scales = {"V": 1.0, "mV": 1e-3, "uV": 1e-6, "µV": 1e-6}
+    adc_gains_volts: list[float | None] = []
+    for index in adc_indices:
+        channel = entry["channels"][index]
+        scale = unit_scales.get(str(channel.get("units", "")))
+        bit_volts = channel.get("bit_volts")
+        gain = float(bit_volts) * scale if bit_volts is not None and scale is not None else None
+        adc_gains_volts.append(gain if gain is not None and np.isfinite(gain) and gain > 0 else None)
     folder_name = str(entry["folder_name"]).rstrip("/\\")
     continuous_dat = recording_root / "continuous" / folder_name / "continuous.dat"
     if not continuous_dat.exists():
@@ -1518,6 +1527,7 @@ def _resolve_openephys_stream_info(recording_root: Path) -> OpenEphysStreamInfo:
         adc_channel_indices=adc_indices,
         ephys_channel_names=ephys_names,
         adc_channel_names=adc_names,
+        adc_gains_volts=adc_gains_volts,
     )
 
 
@@ -2015,6 +2025,7 @@ def build_acquisition_catalog(
     ephys_channel_indices_by_subsession: list[list[int] | None] = []
     adc_channel_indices_by_subsession: list[list[int]] = []
     adc_channel_names_by_subsession: list[list[str]] = []
+    adc_gains_volts_by_subsession: list[list[float | None]] = []
     adc_native_orders_by_subsession: list[list[int]] = []
     adc_output_indices_by_subsession: list[list[int]] = []
     adc_layout_sources_by_subsession: list[str] = []
@@ -2063,6 +2074,7 @@ def build_acquisition_catalog(
             ephys_channel_indices_by_subsession.append(list(info.ephys_channel_indices))
             adc_channel_indices_by_subsession.append(list(info.adc_channel_indices))
             adc_channel_names_by_subsession.append(list(info.adc_channel_names))
+            adc_gains_volts_by_subsession.append(list(info.adc_gains_volts))
             adc_orders, adc_layout_source = _resolve_openephys_adc_native_orders(info, path)
             adc_native_orders_by_subsession.append(adc_orders)
             adc_output_indices_by_subsession.append([])
@@ -2147,6 +2159,7 @@ def build_acquisition_catalog(
         ephys_channel_indices_by_subsession.append(None)
         adc_channel_indices_by_subsession.append(list(range(intan_adc_channels)))
         adc_channel_names_by_subsession.append([f"ADC{i + 1}" for i in range(intan_adc_channels)])
+        adc_gains_volts_by_subsession.append([])
         adc_native_orders_by_subsession.append(intan_adc_orders)
         adc_output_indices_by_subsession.append([])
         adc_layout_sources_by_subsession.append(intan_adc_layout_source)
@@ -2295,7 +2308,33 @@ def build_acquisition_catalog(
         ephys_sampling_frequencies_by_subsession=ephys_sampling_frequencies_by_subsession,
         analog_sample_counts_by_subsession=analog_sample_counts_by_subsession,
         analog_sampling_frequencies_by_subsession=analog_sampling_frequencies_by_subsession,
+        adc_gains_volts_by_subsession=adc_gains_volts_by_subsession,
     )
+
+
+def _openephys_adc_epochs(
+    catalog: AcquisitionCatalog, sample_counts: list[int],
+) -> list[tuple[int, int, list[float]]]:
+    """Locate signed ADC epochs and voltage gains in the unchanged uint16 sidecar."""
+    epochs: list[tuple[int, int, list[float]]] = []
+    start = 0
+    for idx, (source_type, count) in enumerate(zip(catalog.source_types, sample_counts, strict=True)):
+        stop = start + int(count)
+        if source_type == "openephys" and catalog.source_adc_channels[idx] > 0:
+            gains = [0.0] * int(catalog.board_adc_channels)
+            for destination, gain in zip(
+                catalog.adc_output_indices_by_subsession[idx],
+                catalog.adc_gains_volts_by_subsession[idx], strict=True,
+            ):
+                if gain is None:
+                    raise ValueError(
+                        f"Open Ephys ADC bit_volts/units are missing or invalid in "
+                        f"{catalog.recording_paths[idx]}; cannot export analog voltage."
+                    )
+                gains[destination] = gain
+            epochs.append((start, stop, gains))
+        start = stop
+    return epochs
 
 
 def print_catalog_summary(catalog: AcquisitionCatalog) -> None:

@@ -351,15 +351,17 @@ class BehaviorGuiSettings:
     enabled: bool = False
     primary_coords: int = 2
     primary_point: str = ""
-    likelihood: float = 0.6
+    likelihood: float = 0.0
     pulses_delta_range: float = 0.01
     calibration_distance_cm: float = 100.0
     calibration_pixel_distance: float = 0.0
-    interpolate_gap_sec: float = 1.0
+    interpolate_gap_sec: float = 0.0
     fallback_video_fps: float = 40.0
     clean_tracker_jumps: bool = True
     dlc_batch_path: str = ""
     overwrite: bool = False
+    camera_adc_channel: int = 0
+    camera_sync_selection: str = "auto"
 
 
 @dataclass
@@ -620,6 +622,10 @@ class PipelineGuiSettings:
             subsession_order=list(self.subsession_order),
             save_raw=p.save_raw,
             analog_inputs=p.analog_inputs,
+            camera_adc_channel=self.behavior.camera_adc_channel or None,
+            camera_sync_auto=self.behavior.camera_sync_selection == "auto",
+            camera_fps=self.behavior.fallback_video_fps,
+            camera_pulses_delta_range=self.behavior.pulses_delta_range,
             digital_inputs=p.digital_inputs,
             do_preprocess=p.do_preprocess,
             bandpass_min_hz=p.bandpass_min_hz,
