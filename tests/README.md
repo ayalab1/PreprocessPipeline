@@ -50,7 +50,8 @@ The project constrains Neo to `>=0.14.3,<0.14.5` because SpikeInterface 0.103.2
 passes an Open Ephys reader argument removed in Neo 0.14.5. The Windows Conda
 environment pins Neo 0.14.4; the existing Linux pin is 0.14.3.
 
-Qt uses its offscreen platform. Pytest cache is disabled; pytest and Numba use
+Linux installs `libegl1`, required when importing Qt GUI modules even with Qt's
+offscreen platform. Pytest cache is disabled; pytest and Numba use
 separate subdirectories of a unique OS temporary directory removed after exit.
 Each job has a 15-minute limit and its test step a five-minute limit. These jobs
 do not run the full suite, GPU sorting, MATLAB, real sessions or interactive GUI

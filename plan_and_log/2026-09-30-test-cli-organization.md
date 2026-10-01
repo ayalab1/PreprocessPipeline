@@ -345,3 +345,11 @@ no runtime source, scientific settings, dependency manifests or test edits.
    Linux follow-up PR.
 4. Collect both scoped CI results and record actual failures or remaining limits.
    Hosted Ubuntu checks do not establish Slurm, CUDA or production-server behavior.
+
+- Opened PR #25 with the focused workflow/documentation change. No local test
+  suite or dependency installation was run.
+- First run 36816338302 at `2c8eceb`: Linux dependency installation succeeded,
+  but test collection failed (`1 error in 1.49 s`) because importing PySide6's
+  QtGui requires `libEGL.so.1`, absent from the hosted Ubuntu image. Add only the
+  corresponding `libegl1` runtime package to the Linux job and rerun the same
+  selection; keep the tests and runtime source unchanged.
