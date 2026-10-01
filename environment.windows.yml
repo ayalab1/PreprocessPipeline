@@ -20,6 +20,7 @@ dependencies:
   - packaging=25.0
   - pyside6=6.9.2
   - spikeinterface=0.103.2
+  - neo=0.14.4
   - pytest=9.0.1
   - ipykernel=7.1.0
   - jupyterlab

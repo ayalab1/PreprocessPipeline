@@ -514,6 +514,12 @@ mexGPUall
 
 On Windows, install a compatible Visual Studio C++ build toolchain before compiling CUDA code.
 
+## Tests
+
+See [tests/README.md](tests/README.md) for the existing test groups, targeted
+Python/MATLAB commands, CLI coverage, and optional CLI help checks. Default pytest
+discovery is limited to project tests; vendored tests are excluded.
+
 ## Current limitations
 
 The Python pipeline does not yet implement:

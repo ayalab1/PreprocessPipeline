@@ -22,6 +22,8 @@ dependencies = [
     "imageio-ffmpeg>=0.4.9",
     "tables>=3.8",
     "spikeinterface==0.103.2",
+    # SI 0.103.2 passes an Open Ephys argument removed in Neo 0.14.5.
+    "neo>=0.14.3,<0.14.5",
 ]
 
 [project.scripts]
