@@ -313,3 +313,18 @@ All selected modules and the vendored sorter setup metadata they inspect are
 tracked. Reviewed the new selection/PowerShell array and documentation diff.
 No local test run was added; the expanded selection will be validated by the
 same single Windows CI job. The earlier corrected 16-case run is passing.
+
+### Basic-check result
+
+- GitHub Actions run 36813003995 at head `4d58301` completed successfully:
+  **67 passed in 26.66 s**. It covers the selected CLI/channel/Phy/mixed inputs,
+  setup configuration, Intan validation, disk budgets, input identity and three
+  transfer success/failure/content-corruption cases. Channel/Phy took 17.76 s;
+  mixed preprocessing took 0.33 s. Job setup, cleanup and cache steps succeeded.
+- Kept one Windows/Python 3.11 job and the original 15-minute job/five-minute
+  test limits. No new test cases, runtime source edits or local dependency
+  installation were needed for the expanded basic checks.
+- Source/diff review and scoped CI execution are complete. Record the result in
+  PR #24; this final log-only update retains the verified test selection. Full
+  suite, other OS/Python combinations, GPU sorting, interactive GUI, MATLAB,
+  real-data processing and the external Windows concat stall remain unverified.
