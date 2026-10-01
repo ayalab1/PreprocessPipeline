@@ -12,7 +12,7 @@ MATLAB tests are run separately.
 
 | Path | Existing coverage | Execution requirements |
 | --- | --- | --- |
-| `tests/cli/` | Pipeline/sorter CLI arguments, bad-channel errors, no-work handling and cross-stage channel identity | Routine cases bypass sorting; the `integration` case uses real preprocessing and Phy binary/channel export |
+| `tests/cli/` | Pipeline/sorter CLI arguments, mode dispatch, JSON results/errors, channel identity and mixed acquisition inputs | Routine cases bypass sorting; two `integration` cases use real preprocessing, including Phy export or mixed Intan/OE/WILD binaries |
 | `tests/preprocess/` | Input validation, disk budgeting, multi-day preparation, sorter partitions/channel mapping, state-scoring memory | Pipeline Python dependencies; synthetic inputs and existing test doubles |
 | `tests/execution/` | Local backend lifecycle/identity, session claims, GPU selection, worker allocator setup | Some tests start subprocesses; Windows/POSIX tests retain their existing skip conditions; GPU queries are mocked |
 | `tests/gui/` | GUI settings, XML/probe selection, run setup, output transfer and recovery | PySide6 and the pipeline dependencies; use Qt's offscreen platform |
@@ -43,11 +43,10 @@ python -m pytest tests/cli tests/setup tests/preprocess/test_intan_validation.py
 ```
 
 This selection does not launch a GUI, sorter, worker job, or Slurm job. The setup
-tests include one short Python subprocess. Before the additional channel CLI
-cases, the selection ran 51 cases in 4.25 seconds on the Windows `preprocess`
-environment; the expanded selection has not been verified. GUI,
-process lifecycle, scientific/plotting, and MATLAB groups remain separately
-selectable. No new parameter combinations or exhaustive test matrix are added.
+tests include one short Python subprocess. The earlier version of this selection
+ran 51 cases in 4.25 seconds; that result predates the added CLI cases. The latest
+validation selection is recorded below. GUI, process lifecycle, scientific/plotting,
+and MATLAB groups remain separately selectable. No exhaustive test matrix is added.
 
 Keep pytest cache disabled and use a fresh temporary directory outside the
 repository. Do not pass the temporary root itself as `--basetemp`.
@@ -55,14 +54,26 @@ repository. Do not pass the temporary root itself as `--basetemp`.
 PowerShell example (after activating `preprocess`):
 
 ```powershell
-$testTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("preprocess-tests-" + [guid]::NewGuid().ToString('N'))
+$testTemp = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
+$previousNumbaCache = $env:NUMBA_CACHE_DIR
+$env:NUMBA_CACHE_DIR = Join-Path $testTemp 'n'
+New-Item -ItemType Directory -Path $testTemp | Out-Null
 try {
-    python -m pytest tests/cli -m "not integration" -q -p no:cacheprovider --basetemp "$testTemp"
+    python -m pytest tests/cli -m "not integration" -q -p no:cacheprovider --basetemp (Join-Path $testTemp 't')
     $testExitCode = $LASTEXITCODE
 } finally {
-    # The unique path was created beneath the OS temporary directory above.
-    if (Test-Path -LiteralPath $testTemp) {
-        Remove-Item -LiteralPath $testTemp -Recurse -Force
+    if ($null -eq $previousNumbaCache) {
+        Remove-Item Env:NUMBA_CACHE_DIR -ErrorAction SilentlyContinue
+    } else {
+        $env:NUMBA_CACHE_DIR = $previousNumbaCache
+    }
+    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    $resolvedTemp = [System.IO.Path]::GetFullPath($testTemp)
+    if (-not $resolvedTemp.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Unexpected temporary directory"
+    }
+    if (Test-Path -LiteralPath $resolvedTemp) {
+        Remove-Item -LiteralPath $resolvedTemp -Recurse -Force
     }
 }
 if ($testExitCode -ne 0) { throw "pytest failed with exit code $testExitCode" }
@@ -97,9 +108,11 @@ execution with a monkeypatch. They do not launch the module as a subprocess or
 run a sorter. Subprocess import tests in `tests/execution/` and `tests/gui/`
 test import behavior, rather than CLI parsing or full pipeline execution.
 
-The added routine cases check a missing XML before sorting, an all-excluded
-sorter no-work result, a pipeline bad-channel ID beyond the binary width, and an
-invalid CLI mode in a real module subprocess before output creation.
+The routine cases check a missing XML before sorting, an all-excluded sorter
+no-work result, a bad-channel ID beyond the binary width, invalid module CLI mode,
+malformed configuration, and stage dispatch for `preprocess`, `postprocess` and
+`noise_label`. They check exit codes and parse result/error JSON; dispatch cases
+replace stage execution and verify the noise-label flag without creating outputs.
 
 Select the cross-stage channel check separately with
 `python -m pytest tests/cli -m integration` and the same cache/temp arguments.
@@ -113,6 +126,8 @@ omission from spike groups. The check follows these contracts:
   preserves the original IDs. Both mappings address the correct binary samples.
 - The CellExplorer input `session.mat` uses one-based bad/electrode channels and
   the full binary width; `chanCoords` rows agree with the corresponding chanMap.
+- CellExplorer sampling rate, dtype, sample count and duration match the binary
+  and Phy metadata. The raw and copied Phy binaries preserve sample count/timebase.
 - Postprocess-only CLI execution respects a selected probe partition without
   treating original IDs as compact indices; source input samples remain intact.
 
@@ -120,10 +135,40 @@ This case uses real preprocessing, postprocess recording resolution, a small
 analyzer and Phy export. It replaces scientific curation and disables exporter
 PCA/amplitude computation and display-template re-estimation. MATLAB CellExplorer,
 GUI interaction, GPU sorting and scientific feature validity are not verified.
-Two CLI-group attempts did not complete within the intended short-check window
-and were stopped without a result; new cases remain runtime-unverified. The
-integration marker is registered but not excluded globally: choose the routine
-or integration command deliberately.
+The second integration case uses one Intan, one OE and one merged WILD epoch.
+It checks selected epoch order, ephys samples excluding the embedded OE ADC,
+bad-column zeroing, MergePoints boundaries, CellExplorer metadata, and analog
+normalization to WILD's 1250 Hz rate. Intan/OE analog identities occupy the same
+output columns, with absent ADC columns zero-filled. Source files remain unchanged.
+Small rejection cases cover OE/WILD rates that disagree with the common XML
+timebase and mismatched ephys channel counts before binary exports.
+
+Synthetic Intan fixtures without local RHD metadata exercise the implementation's
+documented warning and positional ADC identity path. The existing named Intan
+validation check covers a local RHD header separately. Mixed recording tests do
+not validate WILD hardware merging, TTL/camera synchronization, multi-day symlink
+staging, calibration, or actual MATLAB loading.
+
+The integration marker is registered but not excluded globally: choose the routine
+or integration command deliberately. A captured stack from a stalled run identified
+Numba cache-file creation during postprocess import. The PowerShell example uses
+a short unique temporary root with separate Numba/pytest subdirectories and restores
+the previous cache setting. This avoids writing caches into the installed environment;
+it leaves JIT execution enabled and removes both temporary subdirectories afterward.
+
+Latest focused validation on Windows selected the 15 CLI cases plus five existing
+cases: `test_valid_recordings_and_packed_digital_lines`, the three parameterized
+`test_wild_catalog_uses_manifest_analog_width_and_1250_hz` cases, and
+`test_analog_concat_downsamples_non_wild_epochs_to_wild_rate`. The combined run
+finished with 19 passed and one fixture failure in 18.18 seconds. XML anatomical
+groups do not imply separate probes: after explicitly assigning two probes in
+the partition fixture, the affected named test passed in 14.61 seconds (12.74
+seconds in the test body). All 20 distinct selected cases have passing results
+across these runs; no complete-suite result is claimed. The mixed-input normal
+case took 0.53 seconds. Earlier fixture naming/order and Windows path-length
+errors were corrected without changing data dimensions, expected mappings or
+runtime source. Remaining known source limitation: Windows JSON relocation;
+GUI and MATLAB execution remain unverified.
 
 When a launch/import check is needed, choose an entry point explicitly:
 

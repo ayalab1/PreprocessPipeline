@@ -92,3 +92,56 @@ Scoped source/diff review confirms only tests, pytest/ignore selection rules and
 related documentation changed. Follow-up checks cover the matching one-based
 spike groups and Phy/CellExplorer channel coordinates too. The same draft PR #24
 is updated; the older Windows JSON relocation limitation remains unchanged.
+
+## Follow-up: CLI contracts and mixed acquisition inputs
+
+The user requested implementation and verification of the proposed metadata,
+mode-dispatch and result/error contracts, plus mixed Intan/Open Ephys/WILD inputs.
+Treat "Inman" as Intan. Runtime source remains outside scope.
+
+1. Extend the existing channel integration case with sampling rate, dtype,
+   sample-count/duration and successful CLI result checks.
+2. Add small mode-dispatch and malformed-config cases at the CLI boundary.
+3. Add one three-format synthetic preprocessing case covering explicit epoch
+   order, OE embedded ADC separation, WILD 1250 Hz analog normalization and
+   unchanged source files; cover incompatible rates/channel counts separately.
+4. Run only the requested CLI cases and relevant existing lightweight acquisition
+   checks. Capture a stack trace if a run stalls, correct test defects within
+   scope, and report source defects rather than relaxing meaningful assertions.
+5. Review the task diff and update the existing draft PR with actual results.
+
+### Results
+
+- Added eight selected CLI cases (15 CLI cases total): three dispatch modes,
+  malformed-config handling, three-format preprocessing, OE/WILD common-rate
+  rejection, and ephys-width rejection. Extended the existing channel integration
+  case with sampling rate, dtype, sample count/duration and success JSON checks.
+- Normal mixed preprocessing uses the real OE reader, catalog, amplifier/analog
+  writers, MergePoints and session metadata. It preserves the selected WILD/OE/
+  Intan order, excludes the embedded OE ADC from ephys, normalizes analog to
+  1250 Hz, pads absent ADC identities, zeroes bad ephys columns and leaves sources
+  unchanged. TTL/camera synchronization and multi-day symlink staging are not
+  covered; synthetic Intan ADC identities use the documented positional fallback.
+- Corrected fixture mistakes: conventional OE date-directory naming, top-level
+  GUI subsession-order settings, NumPy file writing at long Windows paths, and
+  explicit two-probe assignment (XML anatomical groups default to one probe).
+  These preserve the intended conditions and assertions, rather than hiding a
+  runtime failure. One temporary-runner attempt had a missing parent directory
+  and produced setup errors only; the parent is now created before pytest.
+- Captured a stalled integration stack in Numba's cache-file creation during
+  postprocess import. Stopped only the verified task-owned pytest PID. Redirecting
+  NUMBA_CACHE_DIR to the unique OS temporary root allowed execution to finish;
+  JIT remains enabled, environment settings are restored, and both Numba/pytest
+  directories are removed after process exit. No dependencies or installed
+  environment files were changed. This identifies the current stall location,
+  not the precise filesystem reason or the untraced earlier stalled runs.
+- Scoped combined run: **19 passed, 1 failed in 18.18 s** (15 CLI cases plus five
+  existing Intan/WILD/analog checks). The failure exposed the missing two-probe
+  fixture setting. After correction, only that named test was rerun: **1 passed
+  in 14.61 s**, including 12.74 s in its body. Thus all 20 distinct selected cases
+  have passing results across the combined run and focused rerun, not a single
+  all-pass group run. Mixed normal preprocessing took 0.53 s.
+- No full suite, GUI, MATLAB, hardware acquisition, real-session processing,
+  scientific curation, LFP validation or cluster execution was run. Runtime source
+  is unchanged. The Windows JSON relocation limitation remains separate, so PR
+  #24 stays draft; this follow-up resolves the newly added CLI validation gap.
