@@ -29,8 +29,9 @@ Windows ACLs. Symlink tests require permission to create symlinks.
 
 ## GitHub Actions
 
-`.github/workflows/windows-tests.yml` runs one Windows/Python 3.11 job named
-`Windows basic checks` on pull requests and pushes to `main`. It selects:
+`.github/workflows/basic-tests.yml` runs Python 3.11 jobs on Ubuntu 24.04 and
+Windows, named `Linux basic checks` and `Windows basic checks`, on pull requests
+and pushes to `main`. Both jobs select the same 67 existing cases:
 
 - `tests/cli`, including the two small channel/Phy and mixed-acquisition cases.
 - `tests/setup`, for environment configuration and setup safety.
@@ -42,16 +43,20 @@ Windows ACLs. Symlink tests require permission to create symlinks.
   copy-failure preservation, and equal-size copy-corruption rejection.
 
 These checks run for incoming contributors' PRs as well as the maintainer's PRs.
-The job installs the project/dev dependencies from `pyproject.toml`, keeping NumPy
-at the existing Windows environment baseline. Pip downloads are cached.
+Each job installs the project/dev dependencies from `pyproject.toml`, keeping
+NumPy at the shared Linux/Windows environment baseline of 1.26.4. Pip downloads
+are cached. A failure on one OS does not cancel the other job.
 The project constrains Neo to `>=0.14.3,<0.14.5` because SpikeInterface 0.103.2
 passes an Open Ephys reader argument removed in Neo 0.14.5. The Windows Conda
 environment pins Neo 0.14.4; the existing Linux pin is 0.14.3.
 
-Qt uses its offscreen platform. Pytest cache is disabled; pytest and Numba use
+Linux installs `libegl1`, required when importing Qt GUI modules even with Qt's
+offscreen platform. Pytest cache is disabled; pytest and Numba use
 separate subdirectories of a unique OS temporary directory removed after exit.
-The job has a 15-minute limit and its test step a five-minute limit. It does not
-run the full suite, GPU sorting, MATLAB, real sessions or interactive GUI checks.
+Each job has a 15-minute limit and its test step a five-minute limit. These jobs
+do not run the full suite, GPU sorting, MATLAB, real sessions or interactive GUI
+checks. Hosted Ubuntu coverage checks basic portability; it does not reproduce
+the full Linux server environment or execute Slurm jobs.
 See the PR Checks tab or the repository Actions tab for results. Manual dispatch
 is available after this workflow is present on the default branch.
 

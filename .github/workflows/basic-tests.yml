@@ -1,0 +1,79 @@
+name: Basic tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: basic-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  basic-tests:
+    name: ${{ matrix.platform }} basic checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: Linux
+          - os: windows-latest
+            platform: Windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MPLBACKEND: Agg
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install Linux Qt runtime library
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1
+      - name: Install test dependencies
+        # Match the NumPy baseline in both environment manifests.
+        run: python -m pip install ".[dev]" "numpy==1.26.4"
+      - name: Run selected regressions
+        timeout-minutes: 5
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+
+          tests = [
+              "tests/cli",
+              "tests/setup",
+              "tests/preprocess/test_intan_validation.py",
+              "tests/preprocess/test_disk_space.py",
+              "tests/execution/test_input_identity.py",
+              "tests/gui/test_gui_move_outputs.py::test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata",
+              "tests/gui/test_gui_move_outputs.py::test_move_failure_keeps_source_and_destination_unchanged",
+              "tests/gui/test_gui_move_outputs.py::test_move_rejects_equal_size_staging_corruption_before_source_deletion",
+          ]
+          with tempfile.TemporaryDirectory(prefix="pp-ci-") as temp_dir:
+              test_root = Path(temp_dir)
+              test_env = os.environ.copy()
+              test_env["NUMBA_CACHE_DIR"] = str(test_root / "n")
+              result = subprocess.run(
+                  [sys.executable, "-m", "pytest", *tests, "-q", "-p", "no:cacheprovider",
+                   "--basetemp", str(test_root / "p"), "--durations=5"],
+                  env=test_env,
+              )
+          sys.exit(result.returncode)

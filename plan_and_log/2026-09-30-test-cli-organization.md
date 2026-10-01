@@ -328,3 +328,39 @@ same single Windows CI job. The earlier corrected 16-case run is passing.
   PR #24; this final log-only update retains the verified test selection. Full
   suite, other OS/Python combinations, GPU sorting, interactive GUI, MATLAB,
   real-data processing and the external Windows concat stall remain unverified.
+
+### Linux CI follow-up after PR #24 (2026-10-01)
+
+The user merged PR #24 and clarified that Linux servers are the primary runtime.
+Add Linux basic checks in a separate PR based on merged `main` (`b97a39f`), while
+retaining Windows coverage. Both environment manifests use Python 3.11 and NumPy
+1.26.4. Keep the same 67 existing regressions and CPU-only project/dev install;
+no runtime source, scientific settings, dependency manifests or test edits.
+
+1. Convert the Windows workflow to one shared basic-check workflow with Ubuntu
+   24.04 and Windows jobs; keep the existing Windows check name and time limits.
+2. Use an inline Python runner for the common test selection, subprocess exit
+   status and cleanup of unique OS-temporary pytest/Numba directories.
+3. Update the CI scope documentation, inspect the focused diff, and open the
+   Linux follow-up PR.
+4. Collect both scoped CI results and record actual failures or remaining limits.
+   Hosted Ubuntu checks do not establish Slurm, CUDA or production-server behavior.
+
+- Opened PR #25 with the focused workflow/documentation change. No local test
+  suite or dependency installation was run.
+- First run 36816338302 at `2c8eceb`: Linux dependency installation succeeded,
+  but test collection failed (`1 error in 1.49 s`) because importing PySide6's
+  QtGui requires `libEGL.so.1`, absent from the hosted Ubuntu image. Add only the
+  corresponding `libegl1` runtime package to the Linux job and rerun the same
+  selection; keep the tests and runtime source unchanged.
+
+- Corrected run 36816493198 at `a4ad71c` succeeded on both platforms: **Linux
+  67 passed in 17.27 s; Windows 67 passed in 26.62 s**, with 10 warnings per
+  platform. Qt installation, dependency installation, test execution, temporary
+  cleanup and cache steps succeeded. Reviewed the focused workflow/documentation
+  diff; no runtime source, tests or dependency manifests changed.
+- The shared workflow now runs the same bounded regressions for incoming PRs on
+  both OSes. This completion update changes only this record; CI evidence above
+  identifies the verified implementation commit. No local tests, full suite,
+  production-server environment, Slurm, GPU sorting, MATLAB, real-data processing
+  or interactive GUI validation was performed for this follow-up.
