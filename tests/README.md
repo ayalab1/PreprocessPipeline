@@ -27,6 +27,22 @@ Useful regression cases are retained even when they need an optional environment
 The POSIX permission-bit check is skipped on Windows because it does not test
 Windows ACLs. Symlink tests require permission to create symlinks.
 
+## GitHub Actions
+
+`.github/workflows/windows-tests.yml` runs one Windows/Python 3.11 job on pull
+requests and pushes to `main`. It selects `tests/cli`, including the two small
+synthetic integration cases, and
+`test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata`.
+It installs the project/dev dependencies from `pyproject.toml`, keeping NumPy
+at the existing Windows environment baseline. Pip downloads are cached.
+
+Qt uses its offscreen platform. Pytest cache is disabled; pytest and Numba use
+separate subdirectories of a unique OS temporary directory removed after exit.
+The job has a 15-minute limit and its test step a five-minute limit. It does not
+run the full suite, GPU sorting, MATLAB, real sessions or interactive GUI checks.
+See the PR Checks tab or the repository Actions tab for results. Manual dispatch
+is available after this workflow is present on the default branch.
+
 ## Targeted Python execution
 
 Choose a group, file, or named test deliberately. For example, the existing CLI

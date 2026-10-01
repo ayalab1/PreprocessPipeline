@@ -238,3 +238,37 @@ retention and cleanup order.
   data-scale transfer, failure/corruption paths and the full test suite were not
   run for this follow-up. The external concatenated-dat stall remains
   unreproduced; this progress change is not a claimed resolution of its cause.
+
+## Follow-up: bounded Windows CI
+
+The user asks how to add CI after confirming that neither main nor PR #24 has
+workflow definitions. Add a single GitHub Actions job for the already-selected
+CLI and output-transfer regressions; leave runtime source and test inputs alone.
+
+1. Add a Windows/Python 3.11 workflow triggered by pull requests, main pushes and
+   manual dispatch. Use the declared project/dev dependencies and the existing
+   Windows NumPy baseline, with pip download caching.
+2. Select `tests/cli` (including the two bounded synthetic integration cases)
+   plus the named output-transfer regression. Use offscreen Qt, isolated OS
+   temporary pytest/Numba directories, disabled pytest cache and cleanup.
+3. Document job scope and where to see results; inspect the workflow diff and
+   update the existing PR. Do not add an OS/version matrix or broad test suite.
+4. Push the workflow to trigger the PR run, collect its final result if available,
+   and record CI failures or execution limitations accurately.
+
+### Implementation checkpoint
+
+- Added one Windows job, with a 15-minute overall limit and a five-minute test
+  step. It installs `.[dev]` plus NumPy 1.26.4, caches pip downloads and selects
+  the existing CLI group plus the named transfer regression (16 cases expected).
+- The workflow uses read-only repository permission, ordinary `pull_request`
+  execution and no persisted checkout credentials. Repeated updates to the same
+  PR cancel obsolete runs. Manual dispatch becomes available on the default
+  branch. No runtime source, fixtures, scientific settings or dependency
+  manifests were changed.
+- Reviewed the workflow YAML and PowerShell execution/cleanup sequence against
+  GitHub's current action and event documentation. No local test run or local
+  dependency installation was performed for this configuration change.
+- CI execution is pending the first push of this checkpoint. The PR Checks tab
+  records each run against its commit; report its observed result in the PR
+  validation section rather than treating configuration inspection as CI success.
