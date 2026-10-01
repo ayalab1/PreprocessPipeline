@@ -362,6 +362,16 @@ def test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata(tmp
         json.dumps({"partitions": [{"output_folder": str(source / "Kilosort4_x")}]}),
         encoding="utf-8",
     )
+    sorter_output = source / "Kilosort4_x"
+    sorter_output.mkdir()
+    payload = b"\x01" * (8 * 1024 * 1024 + 17)
+    (sorter_output / "result.bin").write_bytes(payload)
+    transfer_bytes = sum(
+        path.stat().st_size
+        for path in source.rglob("*")
+        if path.is_file() and path.name != "session.dat"
+    )
+    messages: list[str] = []
     settings = PipelineGuiSettings(basepath=str(tmp_path / "raw"), local_root=str(local_root))
 
     result = _move_local_output_to_storage(
@@ -372,6 +382,7 @@ def test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata(tmp
         move_dat=False,
         overwrite=False,
         clean_after_move=True,
+        progress_callback=messages.append,
     )
 
     assert result["cleaned"] is True
@@ -381,6 +392,16 @@ def test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata(tmp
     assert str(destination) in (destination / "preprocess_run.yaml").read_text(encoding="utf-8")
     manifest = json.loads((destination / "sorter_partition_manifest.json").read_text(encoding="utf-8"))
     assert manifest["partitions"][0]["output_folder"] == str(destination / "Kilosort4_x")
+    assert (destination / "Kilosort4_x" / "result.bin").read_bytes() == payload
+    assert messages[0] == f"[transfer] Starting copy to storage: {source.resolve()} -> {destination.resolve()}"
+    assert any(
+        message.startswith(f"[transfer] Copying 100.0% ({transfer_bytes:,} / {transfer_bytes:,} bytes)")
+        for message in messages
+    )
+    verification = next(index for index, message in enumerate(messages) if "Verifying storage output" in message)
+    cleanup = next(index for index, message in enumerate(messages) if "Deleting verified local output" in message)
+    assert verification < cleanup < len(messages) - 1
+    assert messages[-1] == f"[transfer] Copy to storage complete: {destination.resolve()}; local output deleted: True"
 
 
 def test_move_completed_session_resumes_from_custom_named_destination(tmp_path: Path) -> None:

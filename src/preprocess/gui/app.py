@@ -13,12 +13,12 @@ import sys
 import tempfile
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from scipy.io import loadmat
 
-from PySide6.QtCore import QPointF, QProcess, QProcessEnvironment, QRectF, Qt, QTimer, QUrl
+from PySide6.QtCore import QEventLoop, QPointF, QProcess, QProcessEnvironment, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -311,6 +311,7 @@ def _move_local_output_to_storage(
     destination_dir: Path | None = None,
     source_dir: Path | None = None,
     source_basename: str | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     local_output_dir = source_dir or settings.local_output_dir
     basename = source_basename or settings.basename
@@ -322,6 +323,12 @@ def _move_local_output_to_storage(
 
     src_root = local_output_dir.resolve()
     dst_root = storage_dir.expanduser().resolve()
+
+    def _report(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(f"[transfer] {message}")
+
+    _report(f"Starting copy to storage: {src_root} -> {dst_root}")
     if not src_root.exists() or not src_root.is_dir():
         raise FileNotFoundError(f"Local output directory does not exist: {src_root}")
     if destination_dir is None and settings.multi_day_enabled:
@@ -369,6 +376,7 @@ def _move_local_output_to_storage(
 
     move_items: list[tuple[Path, Path]] = []
     skipped: list[dict[str, str]] = []
+    _report("Scanning output inventory")
     for child in sorted(src_root.iterdir(), key=lambda p: p.name.lower()):
         reason = excluded.get(child.name)
         if reason is None and child.name == session_xml_name and destination_has_xml:
@@ -400,15 +408,31 @@ def _move_local_output_to_storage(
             return path.stat().st_size
         return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
-    def _content_signature(path: Path) -> tuple[tuple[str, str, str], ...]:
+    def _content_signature(path: Path, *, phase: str) -> tuple[tuple[str, str, str], ...]:
         """Return a content-aware, symlink-safe inventory rooted at *path*."""
         entries: list[tuple[str, str, str]] = []
+        _report(f"{phase}: {path.name}")
+        last_progress = time.monotonic()
 
         def digest(file_path: Path) -> str:
+            nonlocal last_progress
             hasher = hashlib.sha256()
+            verified_bytes = 0
+            file_bytes = file_path.stat().st_size if progress_callback is not None else 0
             with file_path.open("rb") as handle:
                 for block in iter(lambda: handle.read(1024 * 1024), b""):
                     hasher.update(block)
+                    if progress_callback is not None:
+                        verified_bytes += len(block)
+                        now = time.monotonic()
+                        if now - last_progress >= 1.0:
+                            percent = 100.0 * verified_bytes / file_bytes if file_bytes else 100.0
+                            relative = file_path.relative_to(path) if file_path != path else path.name
+                            _report(
+                                f"{phase}: {path.name} / {relative} {percent:.1f}% "
+                                f"({verified_bytes:,} / {file_bytes:,} bytes)"
+                            )
+                            last_progress = now
             return hasher.hexdigest()
 
         def visit(item: Path, relative: Path) -> None:
@@ -507,6 +531,51 @@ def _move_local_output_to_storage(
                     )
                 metadata_copies.append((src, dst))
 
+    transfer_items = move_items + metadata_copies
+
+    def _copy_size(path: Path) -> int:
+        # Symlinks are copied as links, without reading their targets.
+        if path.is_symlink():
+            return 0
+        if path.is_file():
+            return path.stat().st_size
+        return sum(_copy_size(child) for child in path.iterdir())
+
+    total_bytes = (
+        sum(_copy_size(src) for src, _dst in transfer_items)
+        if progress_callback is not None
+        else 0
+    )
+    copied_bytes = 0
+    last_copy_progress = time.monotonic()
+
+    def _report_copy(path: Path, *, force: bool = False) -> None:
+        nonlocal last_copy_progress
+        if progress_callback is None:
+            return
+        now = time.monotonic()
+        if force or now - last_copy_progress >= 1.0:
+            percent = 100.0 * copied_bytes / total_bytes if total_bytes else 100.0
+            _report(
+                f"Copying {percent:.1f}% ({copied_bytes:,} / {total_bytes:,} bytes): "
+                f"{path.relative_to(src_root)}"
+            )
+            last_copy_progress = now
+
+    def _copy_with_progress(src: str | Path, dst: str | Path) -> str | Path:
+        nonlocal copied_bytes
+        source = Path(src)
+        if progress_callback is None or source.is_symlink():
+            return shutil.copy2(src, dst, follow_symlinks=False)
+        with source.open("rb") as source_handle, Path(dst).open("wb") as destination_handle:
+            for block in iter(lambda: source_handle.read(8 * 1024 * 1024), b""):
+                destination_handle.write(block)
+                copied_bytes += len(block)
+                _report_copy(source)
+        shutil.copystat(src, dst, follow_symlinks=False)
+        return dst
+
+    _report(f"Ready to copy {len(transfer_items)} item(s), {total_bytes:,} bytes")
     staging: Path | None = None
     for _attempt in range(10):
         candidate = dst_root / f".{basename}.move-staging-{uuid.uuid4().hex}"
@@ -525,26 +594,32 @@ def _move_local_output_to_storage(
     publication_skipped_sources: set[Path] = set()
     try:
         # Stage a byte-for-byte copy before modifying either canonical tree.
-        for src, dst in move_items + metadata_copies:
+        for src, dst in transfer_items:
             staged = staging / src.name
+            _report(f"Copying item: {src.name}")
             if src.is_dir() and not src.is_symlink():
-                shutil.copytree(src, staged, symlinks=True)
+                shutil.copytree(src, staged, symlinks=True, copy_function=_copy_with_progress)
             else:
-                shutil.copy2(src, staged, follow_symlinks=False)
+                _copy_with_progress(src, staged)
+            _report_copy(src, force=True)
             # First prove that the raw copy is exact.  Metadata rewriting below
             # is intentional and therefore validated separately.
-            if _content_signature(src) != _content_signature(staged):
+            if _content_signature(src, phase="Verifying source") != _content_signature(
+                staged, phase="Verifying staged copy"
+            ):
                 raise IOError(f"Staged transfer validation failed for {src}")
+            _report(f"Updating recovery paths: {src.name}")
             for candidate in [staged, *staged.rglob("*")] if staged.is_dir() else [staged]:
                 _rewrite_relocated_paths(candidate)
-            staged_signatures[dst] = _content_signature(staged)
+            staged_signatures[dst] = _content_signature(staged, phase="Verifying prepared output")
 
         # Publish only after every item has been copied and validated.  Existing
         # destinations are held in the staging tree so a later failure restores
         # the exact prior destination rather than leaving a partial move behind.
-        for src, dst in move_items + metadata_copies:
+        for src, dst in transfer_items:
             staged = staging / src.name
             backup: Path | None = None
+            _report(f"Publishing to storage: {dst.name}")
             if src.name == session_xml_name:
                 try:
                     if staged.is_symlink():
@@ -616,15 +691,16 @@ def _move_local_output_to_storage(
 
         # Verify the canonical destination after publication before deleting the
         # source.  This makes injected copy/publish failures recoverable.
-        for src, dst in move_items + metadata_copies:
+        for src, dst in transfer_items:
             if src in publication_skipped_sources:
                 continue
-            if _content_signature(dst) != staged_signatures[dst]:
+            if _content_signature(dst, phase="Verifying storage output") != staged_signatures[dst]:
                 raise IOError(f"Published transfer validation failed for {dst}")
 
         # Make the storage root and all published or pre-existing content
         # collaborative. Directories need execute permission for traversal;
         # regular files need read/write permission for every user.
+        _report("Updating storage permissions")
         set_tree_world_rw(dst_root)
     except Exception:
         for dst, backup in reversed(published):
@@ -638,6 +714,7 @@ def _move_local_output_to_storage(
         raise
     finally:
         if staging.exists():
+            _report("Removing temporary transfer files")
             shutil.rmtree(staging, ignore_errors=True)
 
     # Cleanup is outside the publication rollback boundary: the verified copy
@@ -647,6 +724,7 @@ def _move_local_output_to_storage(
         dst_root / ".preprocess-output-contract.json",
         src_root / ".preprocess-output-backups",
     )
+    _report("Cleaning preprocess recovery artifacts")
     for artifact in artifact_cleanup:
         try:
             if artifact.is_symlink():
@@ -663,6 +741,7 @@ def _move_local_output_to_storage(
 
     cleaned = False
     if clean_after_move:
+        _report(f"Deleting verified local output: {src_root}")
         try:
             if src_root.exists():
                 shutil.rmtree(src_root)
@@ -673,6 +752,7 @@ def _move_local_output_to_storage(
                 f"the destination remains valid at {dst_root}: {exc}"
             ) from exc
 
+    _report(f"Copy to storage complete: {dst_root}; local output deleted: {cleaned}")
     return {
         "basepath": str(dst_root),
         "storage_dir": str(dst_root),
@@ -6671,6 +6751,12 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(self, "Copy outputs to storage", message)
             if answer != QMessageBox.StandardButton.Yes:
                 return
+
+            def log_progress(message: str) -> None:
+                self._append_log(message + "\n")
+                # Repaint the log while copying, without accepting another user action.
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
             result = _move_local_output_to_storage(
                 settings,
                 move_dat=self.move_dat_to_basepath.isChecked(),
@@ -6679,6 +6765,7 @@ class MainWindow(QMainWindow):
                 destination_dir=self._move_storage_override,
                 source_dir=source_dir,
                 source_basename=source_basename,
+                progress_callback=log_progress,
             )
             lines = [
                 "Copy to storage finished",
@@ -6707,6 +6794,7 @@ class MainWindow(QMainWindow):
             self._settings_preview_text = text
             self._append_log(text + "\n")
         except Exception as exc:
+            self._append_log(f"Copy to storage failed: {exc}\n")
             QMessageBox.critical(self, "Copy outputs failed", str(exc))
 
     def _move_outputs_to_basepath(self) -> None:

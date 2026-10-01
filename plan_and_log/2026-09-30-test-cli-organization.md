@@ -197,3 +197,44 @@ OE layout concerns are deferred rather than changing its reader speculatively.
 - Scoped source/diff review completed. Update the same PR #24 to include this
   newly authorized source scope, retain its draft state and distinguish the
   prior 20 passing CLI/acquisition cases from this one new regression run.
+
+## Follow-up: output transfer progress
+
+The user requests a visible start log and progress during the final transfer to
+storage. Preserve staged copying, content verification, rollback, metadata
+retention and cleanup order.
+
+1. Add optional transfer logging with byte progress during copying and large-file
+   verification, throttled to avoid flooding the GUI log.
+2. Connect the GUI log and repaint during synchronous transfer, and log failures.
+3. Extend the existing relocation regression to exercise the progress callback
+   alongside its existing metadata and cleanup assertions; run that named test
+   only, using isolated OS temporary directories and disabled pytest cache.
+4. Review the scoped diff, record the actual check and limitations, and update
+   draft PR #24.
+
+### Results
+
+- Added an optional progress callback to storage transfer and connected it to
+  the GUI log. The log identifies source/destination at start, aggregate copying
+  bytes/percentage, content verification, publication, permissions and cleanup.
+  Large-file copying and hashing report about once per second; phase boundaries
+  report immediately. Copying 100% precedes verification and cleanup.
+- With a callback, regular files copy in 8 MiB chunks and retain stat metadata;
+  directory symlinks remain links and their target bytes are excluded from the
+  progress total. Calls without a callback retain `shutil.copy2`. Staging,
+  signature validation, rollback and local-deletion order are retained.
+- GUI event processing updates the log during synchronous transfer while
+  excluding user input. Failures are logged as well as shown in the existing
+  error dialog. No new worker, cancellation mechanism or transfer algorithm
+  outside this request was introduced.
+- Extended the existing named relocation regression with a nested file over
+  8 MiB, exact output-content checks, aggregate progress including metadata,
+  start/completion messages and storage-verification-before-deletion ordering.
+  **1 passed in 3.25 s**, including 0.20 s in the test body, on Windows with
+  offscreen Qt. Pytest cache was disabled; isolated pytest/Numba temporary
+  directories were removed and temporary environment settings restored.
+- Reviewed the scoped source/test diff. Interactive GUI repaint, network or
+  data-scale transfer, failure/corruption paths and the full test suite were not
+  run for this follow-up. The external concatenated-dat stall remains
+  unreproduced; this progress change is not a claimed resolution of its cause.
