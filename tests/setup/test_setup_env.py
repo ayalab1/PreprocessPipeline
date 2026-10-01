@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("setup_env", ROOT / "scripts/setup_env.py")
 setup_env = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup_env)

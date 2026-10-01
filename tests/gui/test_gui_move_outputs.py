@@ -116,6 +116,7 @@ def test_copy_without_local_cleanup_preserves_all_source_items(tmp_path: Path) -
     assert (source / "session.rhd").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits do not describe Windows ACLs")
 def test_copy_makes_entire_destination_tree_world_readable_writable(tmp_path: Path) -> None:
     destination = tmp_path / "storage" / "session"
     source = tmp_path / "local" / "session"
@@ -358,7 +359,7 @@ def test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata(tmp
     record = source / "preprocess_run.yaml"
     record.write_text(f"session_output_dir: {source}\nsource_basepath: {tmp_path / 'raw'}\n", encoding="utf-8")
     (source / "sorter_partition_manifest.json").write_text(
-        '{"partitions": [{"output_folder": "' + str(source / "Kilosort4_x") + '"}]}',
+        json.dumps({"partitions": [{"output_folder": str(source / "Kilosort4_x")}]}),
         encoding="utf-8",
     )
     settings = PipelineGuiSettings(basepath=str(tmp_path / "raw"), local_root=str(local_root))
@@ -378,7 +379,8 @@ def test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata(tmp
     assert (destination / "session.xml").exists()
     assert (destination / "session.rhd").exists()
     assert str(destination) in (destination / "preprocess_run.yaml").read_text(encoding="utf-8")
-    assert str(destination) in (destination / "sorter_partition_manifest.json").read_text(encoding="utf-8")
+    manifest = json.loads((destination / "sorter_partition_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["partitions"][0]["output_folder"] == str(destination / "Kilosort4_x")
 
 
 def test_move_completed_session_resumes_from_custom_named_destination(tmp_path: Path) -> None:

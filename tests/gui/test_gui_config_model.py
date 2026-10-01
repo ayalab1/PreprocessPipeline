@@ -21,7 +21,6 @@ from src.preprocess.gui.app import (
     SubsessionOrderTable,
     _default_config_has_backend_choice,
     _has_slurm_server_commands,
-    _move_local_output_to_storage,
     _resolve_cell_explorer_source_basepath,
 )
 from src.preprocess.gui.config_model import (
@@ -890,53 +889,6 @@ def test_local_session_resume_uses_completed_record_for_single_day(tmp_path: Pat
     assert recovered.settings.basename == "day1"
     assert recovered.settings.preprocess.digital_inputs is False
     assert recovered.settings.local_output_dir == session.resolve()
-
-
-def test_move_completed_session_resume_uses_custom_selected_folder(tmp_path: Path) -> None:
-    import yaml
-
-    local_root = tmp_path / "local"
-    source = local_root / "temporary-output"
-    destination = tmp_path / "storage" / "custom-output-folder"
-    raw = tmp_path / "raw" / "scientific-session"
-    external_workspace = tmp_path / "external-workspace"
-    source.mkdir(parents=True)
-    destination.mkdir(parents=True)
-    raw.mkdir(parents=True)
-    external_workspace.mkdir()
-    (source / "scientific-session.xml").write_text("<session />", encoding="utf-8")
-    (source / "scientific-session.rhd").write_bytes(b"rhd")
-    settings = PipelineGuiSettings(basepath=str(raw), local_root=str(local_root))
-    analysis = AnalysisConfig.create(json.loads(settings.to_json()))
-    execution = _resume_execution(external_workspace)
-    (source / "preprocess_run.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "session_output_dir": str(source.resolve()),
-                "analysis": analysis.to_dict(),
-                "execution": execution.to_dict(),
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    _move_local_output_to_storage(
-        settings,
-        destination_dir=destination,
-        source_dir=source,
-        source_basename="scientific-session",
-        move_dat=False,
-        overwrite=False,
-        clean_after_move=True,
-    )
-
-    recovered = load_local_session_resume(destination)
-
-    assert recovered.settings.basename == "scientific-session"
-    assert recovered.settings.existing_session_dir == str(destination.resolve())
-    assert recovered.settings.local_output_dir == destination.resolve()
-    assert recovered.settings.execution.workspace == str(external_workspace.resolve())
 
 
 def test_local_session_resume_reads_completed_record_with_manual_lease(tmp_path: Path) -> None:
