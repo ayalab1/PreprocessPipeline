@@ -371,6 +371,20 @@ def write_concatenated_dat(
     partial_path = output_dat_path.with_name(
         f"{output_dat_path.name}.partial-{uuid.uuid4().hex[:12]}"
     )
+    n_channels = int(recording.get_num_channels())
+    n_frames = _recording_num_frames(recording)
+    expected_bytes = (
+        int(n_frames) * n_channels * np.dtype(dtype).itemsize if n_frames is not None else None
+    )
+    phase = "writing"
+    print(
+        f"Concatenated dat: {phase}; output={output_dat_path}; partial={partial_path}; "
+        f"frames={n_frames}; channels={n_channels}; dtype={np.dtype(dtype)}; "
+        f"expected_bytes={expected_bytes}; requested_workers={job_kwargs.get('n_jobs', 'default')}; "
+        f"pool_engine={job_kwargs.get('pool_engine', 'default')}; "
+        f"SpikeInterface={si.__version__}",
+        flush=True,
+    )
     try:
         si.write_binary_recording(
             recording,
@@ -380,21 +394,31 @@ def write_concatenated_dat(
             verbose=True,
             **job_kwargs,
         )
+        phase = "validating"
+        print(f"Concatenated dat: {phase}; partial={partial_path}", flush=True)
         _validate_existing_binary_size(
             path=partial_path,
             dtype=dtype,
-            num_channels=int(recording.get_num_channels()),
-            expected_frames=_recording_num_frames(recording),
+            num_channels=n_channels,
+            expected_frames=n_frames,
             label="new concatenated dat",
         )
+        phase = "publishing"
+        print(f"Concatenated dat: {phase}; output={output_dat_path}", flush=True)
         os.replace(partial_path, output_dat_path)
     except BaseException as exc:
+        if hasattr(exc, "add_note"):
+            exc.add_note(
+                f"Concatenated dat: failed during {phase}; "
+                f"output={output_dat_path}; partial={partial_path}"
+            )
         try:
             partial_path.unlink(missing_ok=True)
         except OSError as cleanup_exc:
             if hasattr(exc, "add_note"):
                 exc.add_note(f"Could not remove incomplete output {partial_path}: {cleanup_exc}")
         raise
+    print(f"Concatenated dat: complete; output={output_dat_path}", flush=True)
     return output_dat_path
 
 

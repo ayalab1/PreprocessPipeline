@@ -2,9 +2,10 @@
 
 ## Goal and scope
 
-Organize tests and document targeted execution without changing runtime
-source code, scripts, dependencies or scientific behavior. Preserve meaningful
-regression conditions, and add CLI coverage within the user's follow-up scope.
+Organize tests and document targeted execution. The initial phases leave runtime
+source unchanged; the user's later bug-fix request authorizes the specific source
+changes recorded below. Preserve scripts, dependencies, scientific behavior and
+meaningful regression conditions; add CLI coverage within the user's follow-up scope.
 Create a pull request containing only this task's changes; preserve existing
 untracked notebooks, diagnostics, and the headstage investigation record.
 
@@ -145,3 +146,54 @@ Treat "Inman" as Intan. Runtime source remains outside scope.
   scientific curation, LFP validation or cluster execution was run. Runtime source
   is unchanged. The Windows JSON relocation limitation remains separate, so PR
   #24 stays draft; this follow-up resolves the newly added CLI validation gap.
+
+## Follow-up: Windows relocation and reported concat stall
+
+The user now requests handling the source issues and a Windows concatenated-dat
+stall reported by another user. The input type, output storage and last log are
+unknown, and the user's own environment does not reproduce it. The user notes
+that OE normally puts ADC columns last; that tested layout works, so interleaved
+OE layout concerns are deferred rather than changing its reader speculatively.
+
+1. Fix escaped Windows JSON paths during staged output relocation by decoding
+   and recursively rewriting string values, retaining atomic publication.
+2. Add flushed, phase-specific diagnostic messages around concatenated binary
+   writing, size validation and final publication, including requested worker/
+   pool settings, binary dimensions and installed SpikeInterface version.
+3. Preserve processing algorithms, worker defaults, dtype, channels and inputs;
+   do not attribute the unreproduced stall to multiprocessing or change engines.
+4. Run one existing named filesystem relocation regression, with offscreen Qt,
+   disabled pytest cache and isolated temporary directories. Inspect writer changes
+   without launching a broad pipeline or multiprocessing experiment.
+5. Review the focused diff, record remaining uncertainties and update PR #24 to
+   reflect the user-authorized source scope and actual validation.
+
+### Results
+
+- Changed only the generic JSON relocation branch in `src/preprocess/gui/app.py`
+  to parse and recursively rewrite strings, including keys to retain existing
+  POSIX replacement semantics. Serialization escapes destination paths correctly;
+  publication stays atomic and unchanged JSON is not rewritten. The completed
+  YAML record's special external-workspace rule is unchanged.
+- Existing named filesystem regression passed on Windows: **1 passed in 2.85 s**,
+  including 0.11 s in its body. It verifies the decoded sorter output path, YAML
+  recovery path, custom-destination XML/RHD retention and local cleanup. Used
+  offscreen Qt, disabled pytest cache and isolated Numba/pytest temporary folders
+  cleaned after exit. No interactive GUI, full GUI group or broad suite was run.
+- Added flushed diagnostic phases around `write_concatenated_dat`: writing,
+  validating, publishing and complete, with failure-stage exception notes. The first message records paths,
+  frames/channels/dtype, expected bytes, requested workers/pool and SI version.
+  Writer behavior and processing settings are unchanged; source/diff inspection
+  only for this diagnostic change, with no multiprocessing or data-scale run.
+- Inspected the actual installed/pinned SI 0.103.2 writer and executor. It
+  preallocates the binary before chunk processing and uses a process pool when
+  the GUI requests it. Thus file size is not completion evidence. No available
+  evidence attributes the other user's stall to file allocation, worker startup,
+  computation, storage or final publication; there is no reproduced concat bug
+  or confirmed resolution. No speculative engine/dependency change was made.
+- OE reader source is unchanged following the user's standard trailing-ADC
+  clarification. The tested trailing-ADC layout works; interleaved-ADC concerns
+  remain unverified/deferred rather than being represented as a confirmed bug.
+- Scoped source/diff review completed. Update the same PR #24 to include this
+  newly authorized source scope, retain its draft state and distinguish the
+  prior 20 passing CLI/acquisition cases from this one new regression run.

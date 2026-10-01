@@ -167,8 +167,38 @@ seconds in the test body). All 20 distinct selected cases have passing results
 across these runs; no complete-suite result is claimed. The mixed-input normal
 case took 0.53 seconds. Earlier fixture naming/order and Windows path-length
 errors were corrected without changing data dimensions, expected mappings or
-runtime source. Remaining known source limitation: Windows JSON relocation;
-GUI and MATLAB execution remain unverified.
+runtime source. These CLI results predate the source follow-up below; they are
+not a rerun of the CLI group after that follow-up. Full GUI and MATLAB execution
+remain unverified.
+
+## Windows source follow-up
+
+The user subsequently authorized source fixes. JSON metadata relocation now
+decodes JSON and recursively rewrites its string keys/values, so Windows
+backslash escaping does not leave references to the old local output path.
+The existing named regression
+`tests/gui/test_gui_move_outputs.py::test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata`
+passed on Windows in 2.85 seconds (0.11 seconds in its body), with offscreen Qt,
+disabled pytest cache and an isolated temporary directory. It exercises filesystem
+transfer and recovery metadata, not an interactive GUI session.
+
+A separate user's Windows concatenated-dat stall has no available last log,
+input format or storage details. The writer now prints flushed `writing`,
+`validating`, `publishing` and `complete` messages, with failure-stage exception notes and the
+output/partial paths, expected binary dimensions/bytes, requested workers/pool
+engine and installed SpikeInterface version. Numerical processing, worker defaults,
+pool selection and atomic publication are unchanged. This diagnostic-only writer
+change was inspected; no new multiprocessing or full-pipeline run was performed.
+The stall's cause and resolution in the other user's environment remain unknown.
+
+For the next occurrence, retain the last phase message and SpikeInterface's own
+progress output. The upstream writer preallocates the partial file before chunk
+processing: a full-size partial file alone does not establish completed writing.
+If a comparison run is needed, select one preprocessing worker in the GUI and
+use a separate empty output location; retain the original inputs and outputs.
+That comparison has not been executed here. The usual OE layout with ADCs after
+the ephys channels passed the earlier mixed-recording case; interleaved-ADC reader
+changes are deferred and no OE runtime source is changed in this follow-up.
 
 When a launch/import check is needed, choose an entry point explicitly:
 

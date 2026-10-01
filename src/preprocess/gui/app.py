@@ -457,11 +457,21 @@ def _move_local_output_to_storage(
                 raise ValueError(f"Rewritten YAML metadata has an invalid root: {path}")
             return
         if path.suffix.lower() == ".json":
-            text = path.read_text(encoding="utf-8", errors="surrogateescape")
-            rewritten = text.replace(str(src_root), str(dst_root))
-            if rewritten != text:
+            payload = json.loads(path.read_text(encoding="utf-8", errors="surrogateescape"))
+
+            def rewrite_json(value: Any) -> Any:
+                if isinstance(value, dict):
+                    return {rewrite_json(key): rewrite_json(item) for key, item in value.items()}
+                if isinstance(value, list):
+                    return [rewrite_json(item) for item in value]
+                if isinstance(value, str):
+                    return value.replace(str(src_root), str(dst_root))
+                return value
+
+            rewritten = rewrite_json(payload)
+            if rewritten != payload:
                 tmp = path.with_name(f".{path.name}.move-rewrite-{uuid.uuid4().hex}")
-                tmp.write_text(rewritten, encoding="utf-8", errors="surrogateescape")
+                tmp.write_text(json.dumps(rewritten, indent=2), encoding="utf-8")
                 os.replace(tmp, path)
             json.loads(path.read_text(encoding="utf-8"))
             return
