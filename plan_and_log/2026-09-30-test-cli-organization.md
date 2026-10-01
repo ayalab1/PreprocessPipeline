@@ -328,3 +328,20 @@ same single Windows CI job. The earlier corrected 16-case run is passing.
   PR #24; this final log-only update retains the verified test selection. Full
   suite, other OS/Python combinations, GPU sorting, interactive GUI, MATLAB,
   real-data processing and the external Windows concat stall remain unverified.
+
+### Linux CI follow-up after PR #24 (2026-10-01)
+
+The user merged PR #24 and clarified that Linux servers are the primary runtime.
+Add Linux basic checks in a separate PR based on merged `main` (`b97a39f`), while
+retaining Windows coverage. Both environment manifests use Python 3.11 and NumPy
+1.26.4. Keep the same 67 existing regressions and CPU-only project/dev install;
+no runtime source, scientific settings, dependency manifests or test edits.
+
+1. Convert the Windows workflow to one shared basic-check workflow with Ubuntu
+   24.04 and Windows jobs; keep the existing Windows check name and time limits.
+2. Use an inline Python runner for the common test selection, subprocess exit
+   status and cleanup of unique OS-temporary pytest/Numba directories.
+3. Update the CI scope documentation, inspect the focused diff, and open the
+   Linux follow-up PR.
+4. Collect both scoped CI results and record actual failures or remaining limits.
+   Hosted Ubuntu checks do not establish Slurm, CUDA or production-server behavior.
