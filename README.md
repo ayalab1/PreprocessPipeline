@@ -122,6 +122,11 @@ Main session outputs include:
 - `preprocess_run.yaml` and `preprocess.log`.
 - `Kilosort_<timestamp>/` sorting results.
 
+## Documentation
+
+- [Parameter reference](docs/parameters.md): configuration keys, defaults, and units.
+- [CLI guide](docs/cli.md): direct runs, multi-day sessions, external sorting, and Local/Slurm Runs.
+
 ## Tests
 
 See [tests/README.md](tests/README.md) for test groups and execution commands.
