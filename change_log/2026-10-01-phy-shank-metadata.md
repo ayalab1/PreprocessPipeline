@@ -34,3 +34,10 @@ were reported. `git diff --check` passed.
 
 No real GPU/MATLAB sorting or interactive Phy session was run, and HP19 day10
 outputs were not modified.
+
+CI follow-up: Windows passed all 84 cases, while Linux passed 83 and failed the
+native Kilosort1 case because the existing default path used `Kilosort1` instead
+of the checked-in `KiloSort1`. The API and CLI defaults now match the actual
+directory. A spelling regression catches this even on case-insensitive Windows;
+explicit user-supplied paths still take precedence. All 18 sorter/CLI checks
+passed locally after the correction. The CI selection now includes 85 cases.

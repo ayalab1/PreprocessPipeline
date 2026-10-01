@@ -279,7 +279,7 @@ on Linux. Kilosort2.5 uses `--sorter kilosort2.5` and
 | `--offset-to-uV` | `0.0` | Conversion offset in µV. |
 | `--output-folder` | Required | Sorter output directory. |
 | `--remove-existing-folder` | Off | Delete an existing sorter output folder before running. |
-| `--kilosort1-path` | `sorter/Kilosort1` | Kilosort1 installation; explicitly use `sorter/KiloSort1` for this checkout on Linux. |
+| `--kilosort1-path` | `sorter/KiloSort1` | Kilosort1 installation, matching the checked-in directory's capitalization. |
 | `--kilosort2-5-path` | `sorter/Kilosort2.5` | Kilosort2.5 installation. |
 | `--kilosort4-path` | `sorter/Kilosort4` | Kilosort4 repository containing the Python package. |
 | `--matlab-path` | Discovery | MATLAB executable or bin directory. |

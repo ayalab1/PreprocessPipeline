@@ -229,7 +229,7 @@ def _default_sorter_config_path(sorter: str) -> Path:
 
 
 def _default_kilosort1_path() -> Path:
-    return _repo_root() / "sorter" / "Kilosort1"
+    return _repo_root() / "sorter" / "KiloSort1"
 
 
 def _default_kilosort25_path() -> Path:
@@ -2235,7 +2235,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--kilosort1-path",
-        default="sorter/Kilosort1",
+        default="sorter/KiloSort1",
         help="Kilosort1 folder path (used only when --sorter kilosort).",
     )
     p.add_argument(

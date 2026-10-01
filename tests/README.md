@@ -31,7 +31,7 @@ Windows ACLs. Symlink tests require permission to create symlinks.
 
 `.github/workflows/basic-tests.yml` runs Python 3.11 jobs on Ubuntu 24.04 and
 Windows, named `Linux basic checks` and `Windows basic checks`, on pull requests
-and pushes to `main`. Both jobs select the same 84 cases:
+and pushes to `main`. Both jobs select the same 85 cases:
 
 - `tests/cli`, including the two small channel/Phy and mixed-acquisition cases.
 - `tests/setup`, for environment configuration and setup safety.
