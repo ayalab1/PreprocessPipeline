@@ -12,7 +12,7 @@ MATLAB tests are run separately.
 
 | Path | Existing coverage | Execution requirements |
 | --- | --- | --- |
-| `tests/cli/` | Sorter CLI argument parsing and forwarding of active/excluded channel lists | Pipeline Python dependencies; sorting is replaced by the existing monkeypatch |
+| `tests/cli/` | Pipeline/sorter CLI arguments, bad-channel errors, no-work handling and cross-stage channel identity | Routine cases bypass sorting; the `integration` case uses real preprocessing and Phy binary/channel export |
 | `tests/preprocess/` | Input validation, disk budgeting, multi-day preparation, sorter partitions/channel mapping, state-scoring memory | Pipeline Python dependencies; synthetic inputs and existing test doubles |
 | `tests/execution/` | Local backend lifecycle/identity, session claims, GPU selection, worker allocator setup | Some tests start subprocesses; Windows/POSIX tests retain their existing skip conditions; GPU queries are mocked |
 | `tests/gui/` | GUI settings, XML/probe selection, run setup, output transfer and recovery | PySide6 and the pipeline dependencies; use Qt's offscreen platform |
@@ -39,12 +39,13 @@ For a short routine check, select the existing CLI/setup tests and small input
 validation tests together:
 
 ```text
-python -m pytest tests/cli tests/setup tests/preprocess/test_intan_validation.py tests/preprocess/test_disk_space.py tests/execution/test_input_identity.py -q -p no:cacheprovider --basetemp <unique-OS-temp-directory>
+python -m pytest tests/cli tests/setup tests/preprocess/test_intan_validation.py tests/preprocess/test_disk_space.py tests/execution/test_input_identity.py -m "not integration" -q -p no:cacheprovider --basetemp <unique-OS-temp-directory>
 ```
 
 This selection does not launch a GUI, sorter, worker job, or Slurm job. The setup
-tests include one short Python subprocess. It ran 51 cases in 4.25 seconds on the
-current Windows `preprocess` environment; other machines can take longer. GUI,
+tests include one short Python subprocess. Before the additional channel CLI
+cases, the selection ran 51 cases in 4.25 seconds on the Windows `preprocess`
+environment; the expanded selection has not been verified. GUI,
 process lifecycle, scientific/plotting, and MATLAB groups remain separately
 selectable. No new parameter combinations or exhaustive test matrix are added.
 
@@ -56,7 +57,7 @@ PowerShell example (after activating `preprocess`):
 ```powershell
 $testTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("preprocess-tests-" + [guid]::NewGuid().ToString('N'))
 try {
-    python -m pytest tests/cli -q -p no:cacheprovider --basetemp "$testTemp"
+    python -m pytest tests/cli -m "not integration" -q -p no:cacheprovider --basetemp "$testTemp"
     $testExitCode = $LASTEXITCODE
 } finally {
     # The unique path was created beneath the OS temporary directory above.
@@ -73,7 +74,7 @@ POSIX example:
 
 ```bash
 test_temp=$(mktemp -d "${TMPDIR:-/tmp}/preprocess-tests.XXXXXXXX")
-python -m pytest tests/cli -q -p no:cacheprovider --basetemp "$test_temp"
+python -m pytest tests/cli -m "not integration" -q -p no:cacheprovider --basetemp "$test_temp"
 test_exit_code=$?
 rm -rf -- "$test_temp"
 (exit "$test_exit_code")
@@ -95,6 +96,34 @@ They call `build_parser()` and `run_sorter_cli()` directly and replace sorter
 execution with a monkeypatch. They do not launch the module as a subprocess or
 run a sorter. Subprocess import tests in `tests/execution/` and `tests/gui/`
 test import behavior, rather than CLI parsing or full pipeline execution.
+
+The added routine cases check a missing XML before sorting, an all-excluded
+sorter no-work result, a pipeline bad-channel ID beyond the binary width, and an
+invalid CLI mode in a real module subprocess before output creation.
+
+Select the cross-stage channel check separately with
+`python -m pytest tests/cli -m integration` and the same cache/temp arguments.
+One eight-channel synthetic recording combines manual exclusion, XML skip and
+omission from spike groups. The check follows these contracts:
+
+- Preprocessing retains all binary columns and zeroes bad columns; postprocessing
+  selects good channels by their original zero-based IDs.
+- Raw-reference Phy output keeps the full binary width and original column IDs.
+  Copied-binary Phy output uses compact indices, while `channel_map_si.npy`
+  preserves the original IDs. Both mappings address the correct binary samples.
+- The CellExplorer input `session.mat` uses one-based bad/electrode channels and
+  the full binary width; `chanCoords` rows agree with the corresponding chanMap.
+- Postprocess-only CLI execution respects a selected probe partition without
+  treating original IDs as compact indices; source input samples remain intact.
+
+This case uses real preprocessing, postprocess recording resolution, a small
+analyzer and Phy export. It replaces scientific curation and disables exporter
+PCA/amplitude computation and display-template re-estimation. MATLAB CellExplorer,
+GUI interaction, GPU sorting and scientific feature validity are not verified.
+Two CLI-group attempts did not complete within the intended short-check window
+and were stopped without a result; new cases remain runtime-unverified. The
+integration marker is registered but not excluded globally: choose the routine
+or integration command deliberately.
 
 When a launch/import check is needed, choose an entry point explicitly:
 
