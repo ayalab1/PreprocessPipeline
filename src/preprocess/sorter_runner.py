@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import time
+import warnings
 from typing import Any
 import ast
 
@@ -29,7 +30,7 @@ from .io import atomic_write_json, load_xml_metadata
 from .paths import find_project_root
 from .recording import apply_preprocessing, attach_probe_from_chanmap, select_recording_channels
 from .channel_layout import NoActiveChannels, load_channel_layout, validate_channel_ids
-from ..phy_metadata import read_phy_params
+from ..phy_metadata import read_phy_params, write_phy_shank_metadata
 from src.worker_defaults import default_worker_count
 
 
@@ -1345,6 +1346,26 @@ def _patch_channel_map_for_raw_dat(
             raise ValueError(f"Cannot map native Phy channels to binary columns: {channel_map_path}") from exc
 
 
+def _write_phy_shanks_from_chanmap(
+    output_folder: Path, chanmap_mat_path: Path | None, num_channels: int,
+) -> None:
+    if chanmap_mat_path is None or not Path(chanmap_mat_path).exists():
+        return
+    try:
+        layout = load_channel_layout(Path(chanmap_mat_path), num_channels)
+        if "kcoords" not in layout:
+            return
+        for path in output_folder.rglob("channel_map.npy"):
+            write_phy_shank_metadata(
+                path.parent, source_channel_ids=layout["chanMap0ind"],
+                shank_ids=layout["kcoords"],
+                probe_ids=layout.get("probe_ids", np.zeros_like(layout["chanMap0ind"])),
+                exported_channel_ids=np.load(path),
+            )
+    except (ValueError, TypeError, OSError) as exc:
+        warnings.warn(f"Could not export Phy shank metadata: {exc}", RuntimeWarning, stacklevel=2)
+
+
 def _patch_cluster_info_channels_for_raw_dat(
     *,
     output_folder: Path,
@@ -2137,6 +2158,7 @@ def execute_sorting_job(
             active_channels_0based=sorter_active_channels_0based,
             n_channels_dat=int(nch),
         )
+    _write_phy_shanks_from_chanmap(output_folder, chanmap_mat_path, int(nch))
     if sorter_input in _MATLAB_SORTER_INPUTS and cleanup_temp_wh:
         _cleanup_temp_wh_dat(output_folder)
     print(

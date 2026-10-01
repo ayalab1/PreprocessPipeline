@@ -31,13 +31,17 @@ Windows ACLs. Symlink tests require permission to create symlinks.
 
 `.github/workflows/basic-tests.yml` runs Python 3.11 jobs on Ubuntu 24.04 and
 Windows, named `Linux basic checks` and `Windows basic checks`, on pull requests
-and pushes to `main`. Both jobs select the same 67 existing cases:
+and pushes to `main`. Both jobs select the same 84 cases:
 
 - `tests/cli`, including the two small channel/Phy and mixed-acquisition cases.
 - `tests/setup`, for environment configuration and setup safety.
 - `tests/preprocess/test_intan_validation.py`, for malformed input rejection and
   preservation of input data.
 - `tests/preprocess/test_disk_space.py`, for disk budgets and early rejection.
+- `tests/preprocess/test_kilosort_partition_channels.py`, including native Phy
+  shank/probe metadata alignment with simulated sorter output; MATLAB/GPU sorting
+  is not launched. CLI export tests also check shank labels with external and
+  copied binaries, reordered channels, and missing geometry.
 - `tests/execution/test_input_identity.py`, for input identity and resume checks.
 - Three named output-transfer tests: recovery paths/custom metadata/progress,
   copy-failure preservation, and equal-size copy-corruption rejection.
