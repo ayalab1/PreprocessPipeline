@@ -3327,7 +3327,7 @@ class MainWindow(QMainWindow):
         self.behavior_distance_cm = self._double_spin(0.001, 1_000_000.0, 100.0)
         self.behavior_pixel_distance = self._double_spin(0.0, 1_000_000.0, 0.0)
         self.behavior_pixel_distance.setVisible(False)
-        self.behavior_gap_sec = self._double_spin(0.0, 3600.0, 1.0)
+        self.behavior_gap_sec = self._double_spin(0.0, 3600.0, 0.0)
 
         run = QGroupBox("Export")
         run_form = self._form_layout(run)

@@ -355,7 +355,7 @@ class BehaviorGuiSettings:
     pulses_delta_range: float = 0.01
     calibration_distance_cm: float = 100.0
     calibration_pixel_distance: float = 0.0
-    interpolate_gap_sec: float = 1.0
+    interpolate_gap_sec: float = 0.0
     fallback_video_fps: float = 40.0
     clean_tracker_jumps: bool = True
     dlc_batch_path: str = ""

@@ -331,3 +331,11 @@ check on gui/app.py and behavior.py passed. Live GUI interaction and full normal
 preprocessing were not run. Other analog inputs and full analog MAT export retain
 the previously recorded validation limits. Commit/push remain authorized; merge is
 held. Unrelated notebooks, diagnostics, and headstage work are excluded.
+
+### Interpolation default
+
+Set the Behavior interpolation default to 0 seconds in the GUI widget and settings
+model at the user's request. The processing entry point already defaults to 0.
+Explicit saved settings continue to load unchanged. Reviewed the two-line source
+diff; tests and live GUI validation were not run. Commit/push stay on the topic
+branch and merge remains held.
