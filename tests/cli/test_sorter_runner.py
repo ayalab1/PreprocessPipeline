@@ -8,6 +8,19 @@ import pytest
 from src.preprocess.channel_layout import NoActiveChannels
 
 
+def test_kilosort1_defaults_match_vendored_directory_case():
+    root = Path(__file__).resolve().parents[2]
+    expected = root / "sorter" / "KiloSort1"
+    # Check the spelling explicitly: exists() alone accepts incorrect case
+    # on Windows and would miss the Linux default-path failure.
+    assert sr._default_kilosort1_path().as_posix() == expected.as_posix()
+    args = sr.build_parser().parse_args([
+        "--dat-path", "input.dat", "--output-folder", "out",
+    ])
+    assert args.kilosort1_path == "sorter/KiloSort1"
+    assert expected.is_dir()
+
+
 def test_run_sorter_cli_passes_active_and_excluded_channels(
     tmp_path: Path,
     monkeypatch,

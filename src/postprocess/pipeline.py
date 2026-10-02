@@ -9,6 +9,7 @@ import re
 import shutil
 import tempfile
 import time
+import warnings
 from pathlib import Path
 from typing import Callable
 
@@ -32,7 +33,7 @@ from ..preprocess.recording import (
 )
 from .metafile import PostprocessConfig, PostprocessResult
 from .phy_export import write_centered_native_templates
-from ..phy_metadata import read_phy_params, resolve_phy_dat_path
+from ..phy_metadata import read_phy_params, resolve_phy_dat_path, write_phy_shank_metadata
 from ..preprocess.channel_layout import NoActiveChannels
 from ..sorting_manifest import all_partitions_skipped
 
@@ -965,6 +966,16 @@ def _export_phy_to_output_folder(
         **job_kwargs,
     )
     write_centered_native_templates(sorting_analyzer, phy_export_tmp, job_kwargs)
+    contacts = sorting_analyzer.recording.get_property("contact_vector")
+    if contacts is not None and {"shank_ids", "probe_index"}.issubset(contacts.dtype.names or ()):
+        try:
+            write_phy_shank_metadata(
+                phy_export_tmp, source_channel_ids=sorting_analyzer.channel_ids,
+                shank_ids=contacts["shank_ids"], probe_ids=contacts["probe_index"],
+                exported_channel_ids=np.load(phy_export_tmp / "channel_map_si.npy"),
+            )
+        except (ValueError, TypeError, OSError) as exc:
+            warnings.warn(f"Could not export Phy shank metadata: {exc}", RuntimeWarning, stacklevel=2)
     for child in phy_export_tmp.iterdir():
         destination = output_folder / child.name
         if destination.exists():

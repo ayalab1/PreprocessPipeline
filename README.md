@@ -80,6 +80,11 @@ Preprocessing retains the full binary channel columns; `zero_bad=True` zeroes
 bad channels. Analysis excludes bad channels while preserving original channel
 IDs. Review the channel map and exclusions before running.
 
+New native Kilosort and postprocessed Phy exports include shank/probe metadata
+when the channel map or attached probe defines it. Phy's `sh` labels are
+0-based and distinguish shanks across probes; they need not match XML group
+numbers. Without shank metadata, Phy retains its default `sh 0` labels.
+
 For external sorting, select its folder and the matching **Postprocess recording**.
 The recording's channel columns, sample order, and time origin must match the
 sorting. Enable `apply_preprocess` for raw inputs that need filtering/reference.

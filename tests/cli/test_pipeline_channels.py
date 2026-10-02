@@ -21,6 +21,62 @@ from src.preprocess.io import build_acquisition_catalog, discover_subsessions
 from src.preprocess.sorter_runner import build_sorter_partitions, write_sorter_partition_manifest
 
 
+@pytest.mark.parametrize("copy_binary", [False, True])
+@pytest.mark.parametrize("with_geometry", [False, True])
+def test_postprocess_phy_shanks_with_reordered_channels(tmp_path, monkeypatch, copy_binary, with_geometry):
+    import spikeinterface as si
+    from scipy.io import savemat
+    from src.preprocess.recording import attach_probe_from_chanmap
+    import src.postprocess.pipeline as post_pipeline
+
+    traces = np.random.default_rng(0).integers(-100, 100, (1000, 8), dtype=np.int16)
+    dat = tmp_path / "input.dat"
+    traces.tofile(dat)
+    recording = si.NumpyRecording(traces, sampling_frequency=20000)
+    if with_geometry:
+        chanmap = tmp_path / "chanMap.mat"
+        savemat(chanmap, {
+            "chanMap0ind": np.arange(8), "kcoords": [1, 1, 2, 2, 1, 1, 2, 2],
+            "probe_ids": [1, 1, 1, 1, 2, 2, 2, 2],
+            "xcoords": [0, 0, 200, 200, 400, 400, 600, 600],
+            "ycoords": [0, 20, 0, 20, 0, 20, 0, 20],
+        })
+        recording = attach_probe_from_chanmap(recording, chanmap)
+    else:
+        recording.set_channel_locations(np.column_stack((np.arange(8) * 200, np.zeros(8))))
+    selected = [4, 6, 0, 2]
+    recording = recording.select_channels(selected)
+    sorting = si.NumpySorting.from_unit_dict({0: np.array([200, 400, 600])}, sampling_frequency=20000)
+    analyzer = si.create_sorting_analyzer(sorting, recording, format="memory", sparse=False)
+    analyzer.compute("random_spikes", method="all")
+    analyzer.compute("waveforms", n_jobs=1)
+    analyzer.compute("templates")
+    exporter = post_pipeline.export_to_phy
+
+    def export(**kwargs):
+        kwargs.update(compute_pc_features=False, compute_amplitudes=False)
+        return exporter(**kwargs)
+
+    monkeypatch.setattr(post_pipeline, "export_to_phy", export)
+    monkeypatch.setattr(post_pipeline, "write_centered_native_templates", lambda *args: None)
+    folder = tmp_path / "phy"
+    folder.mkdir()
+    post_pipeline._export_phy_to_output_folder(
+        sorting_analyzer=analyzer, output_folder=folder, analyzer_cache_root=None,
+        dat_path=dat, hp_filtered=False, raw_num_channels=8, copy_binary=copy_binary,
+        use_relative_path=False, job_kwargs={"n_jobs": 1}, binary_dtype="int16",
+    )
+    np.testing.assert_array_equal(np.load(folder / "channel_map_si.npy"), selected)
+    np.testing.assert_array_equal(np.load(folder / "channel_map.npy"), np.arange(4) if copy_binary else selected)
+    if with_geometry:
+        np.testing.assert_array_equal(np.load(folder / "channel_shanks.npy"), [2, 3, 0, 1])
+        np.testing.assert_array_equal(np.load(folder / "channel_probe.npy"), [1, 1, 0, 0])
+    else:
+        assert not (folder / "channel_shanks.npy").exists()
+        assert not (folder / "channel_probe.npy").exists()
+    assert dat.read_bytes() == traces.tobytes()
+
+
 def _session_config(tmp_path: Path) -> tuple[PipelineGuiSettings, Path, np.ndarray]:
     raw = tmp_path / "raw" / "session"
     epoch = raw / "epoch"
@@ -155,6 +211,8 @@ def test_pipeline_cli_preserves_channel_identity_through_phy_and_cell_explorer(t
         params = read_phy_params(phy)
         np.testing.assert_array_equal(np.load(phy / "channel_map_si.npy"), good)
         np.testing.assert_array_equal(np.load(phy / "channel_map.npy"), np.arange(5) if copy_binary else good)
+        np.testing.assert_array_equal(np.load(phy / "channel_shanks.npy"), [0, 0, 0, 1, 1])
+        np.testing.assert_array_equal(np.load(phy / "channel_probe.npy"), [0, 0, 0, 1, 1])
         np.testing.assert_array_equal(
             np.load(phy / "channel_positions.npy"), np.column_stack((coords["x"][good], coords["y"][good]))
         )

@@ -1,5 +1,7 @@
 # Change Log
 
+- [2026-10-01 Phy shank metadata](2026-10-01-phy-shank-metadata.md)
+
 - [2026-09-19 default PyTorch allocator configuration](2026-09-19-torch-allocator-default.md)
 
 - [2026-09-17 channel consistency and Phy export](2026-09-17-channel-consistency-phy-export.md)

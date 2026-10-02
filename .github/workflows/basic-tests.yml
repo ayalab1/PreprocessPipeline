@@ -62,6 +62,7 @@ jobs:
               "tests/setup",
               "tests/preprocess/test_intan_validation.py",
               "tests/preprocess/test_disk_space.py",
+              "tests/preprocess/test_kilosort_partition_channels.py",
               "tests/execution/test_input_identity.py",
               "tests/gui/test_gui_move_outputs.py::test_move_rewrites_recovery_paths_and_copies_custom_destination_metadata",
               "tests/gui/test_gui_move_outputs.py::test_move_failure_keeps_source_and_destination_unchanged",
