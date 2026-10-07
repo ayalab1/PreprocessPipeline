@@ -1,5 +1,7 @@
 # Change Log
 
+- [2026-10-06 flex-G5 ver2 XML-ordered wiring](2026-10-06-flex-g5-ver2.md)
+
 - [2026-10-01 Phy shank metadata](2026-10-01-phy-shank-metadata.md)
 
 - [2026-09-19 default PyTorch allocator configuration](2026-09-19-torch-allocator-default.md)

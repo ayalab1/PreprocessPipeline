@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
+import numpy as np
 from scipy.io import savemat
 
 from src.execution.backends import SlurmCapabilities
@@ -86,6 +87,61 @@ def test_buzsaki_5x12_saved_alias_renders_as_canonical_gui_choice(
         assert window._probe_rows_to_assignments() == [
             {"type": "Buzsaki 5x12", "groups": [0, 1, 2, 3, 4], "x_offset": 0}
         ]
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_flex_g5_ver2_gui_roundtrip_and_xml_order_preview(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    monkeypatch.setattr(
+        "src.preprocess.gui.app._load_default_settings", lambda: PipelineGuiSettings()
+    )
+    basepath = tmp_path / "session"
+    basepath.mkdir()
+    xml = basepath / "session.xml"
+    groups = [list(reversed(range(32))), list(reversed(range(32, 64)))]
+    groups_xml = "".join(
+        "<group>" + "".join(f"<channel>{ch}</channel>" for ch in group) + "</group>"
+        for group in groups
+    )
+    xml.write_text(
+        "<session><generalInfo><description>flex-G5 ver2 recording</description>"
+        "</generalInfo><acquisitionSystem><nChannels>64</nChannels>"
+        "<samplingRate>20000</samplingRate></acquisitionSystem>"
+        "<anatomicalDescription><channelGroups>" + groups_xml
+        + "</channelGroups></anatomicalDescription></session>", encoding="utf-8",
+    )
+    assignments, _ = derive_probe_assignments_from_xml(xml)
+    assert assignments == [{"type": "flex-G5 ver2", "groups": [0, 1], "x_offset": 0}]
+    assert "flex-G5" in PROBE_TYPES and "flex-G5 ver2" in PROBE_TYPES
+
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        window.basepath.setText(str(basepath))
+        window.local_root.setText(str(tmp_path / "local"))
+        monkeypatch.setattr(window, "_select_open_file", lambda *_args: str(xml))
+        window._load_xml()
+        assert window._probe_rows_to_assignments() == assignments
+        assert "channels=64" in window.chanmap_canvas.summary.text()
+
+        for alias in ("flex-G5 ver2", "flex_g5_v2", "flex-g5-ver-2"):
+            window._render_probe_assignments(
+                [{"type": alias, "groups": [0, 1], "x_offset": 0}]
+            )
+            assert window._probe_rows_to_assignments() == assignments
+
+        window._probe_assignments_automatic = False
+        settings = window._collect_settings()
+        restored = PipelineGuiSettings.from_json(settings.to_json())
+        assert restored.preprocess.probe_assignments == assignments
+        data = window._current_chanmap_data(restored)
+        ids = np.asarray(data["chanMap0ind"]).ravel()
+        y = np.asarray(data["ycoords"]).ravel()
+        assert ids[y == 800].tolist() == [31, 63]
     finally:
         window.close()
         application.processEvents()

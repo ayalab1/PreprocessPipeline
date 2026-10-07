@@ -568,6 +568,8 @@ def _electrode_type_from_xml(root: ET.Element, default: str = "staggered") -> st
         return "Buzsaki 5x12"
     if "a5x1216buzlin5mm100200160177" in compact_value:
         return A5X12_16_BUZ_LIN_PROBE_TYPE
+    if re.search(r"flex[\s_/-]*g5[\s_/-]*(?:ver|v)?[\s_/-]*2\b", value):
+        return "flex-G5 ver2"
     if any(token in value for token in ("flex-g5", "flex_g5", "flex g5", "flex_probe", "flex probe", "flexprobe")):
         return "flex-G5"
     if "staggered" in value:
@@ -617,6 +619,8 @@ def _normalize_chanmap_layout(layout: str | None) -> str:
         return "Buzsaki 5x12"
     if compact_key == "a5x1216buzlin5mm100200160177":
         return A5X12_16_BUZ_LIN_PROBE_TYPE
+    if compact_key in {"flexg5ver2", "flexg5v2", "flexg52"}:
+        return "flex-G5 ver2"
     if key in {"flex", "flexg5", "flex_g5", "flexprobe", "flex_probe"}:
         return "flex-G5"
     if key in {"poly2", "poly3", "poly5"}:
@@ -927,6 +931,29 @@ def _flex_probe_layout_coords(n_channels: int, group_index: int) -> tuple[np.nda
     return _flex_g5_layout_coords(n_channels, group_index)
 
 
+def _flex_g5_ver2_layout_coords(
+    n_channels: int, group_index: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return legacy flex-G5 positions in XML contact order, not device-ID order.
+
+    Each 32-contact shank is ordered from top to bottom, with left before
+    right at the same height. Consecutive shanks occupy the left and right
+    halves of a 64-contact block. Reuse the legacy geometry so all contact,
+    shank, block and top-anchor distances remain identical.
+    """
+    if n_channels <= 0 or n_channels % 32:
+        raise ValueError("flex-G5 ver2 requires complete 32-channel shanks")
+
+    block_count = (n_channels + 63) // 64
+    x, y = _flex_g5_layout_coords(block_count * 64, group_index)
+    first_x, first_y = x[:64], y[:64]
+    midpoint = (float(np.min(first_x)) + float(np.max(first_x))) / 2.0
+    contact_order = np.lexsort((first_x, -first_y, first_x > midpoint))
+    positions = np.arange(n_channels)
+    indices = contact_order[positions % 64] + (positions // 64) * 64
+    return x[indices], y[indices]
+
+
 def _center_channel_coords_at_x(
     coords: list[dict[str, float | int]], target_x: float | int
 ) -> None:
@@ -996,8 +1023,17 @@ def build_channel_map_data(
         ]
         side_n_channels = side_group_lengths[0] if side_group_lengths else None
 
-        if p_type == "flex-G5":
+        if p_type in {"flex-G5", "flex-G5 ver2"}:
+            xml_contact_order = p_type == "flex-G5 ver2"
             valid_groups = [int(g_idx) for g_idx in p_groups if 0 <= int(g_idx) < ngroups]
+            if xml_contact_order:
+                for g_idx in valid_groups:
+                    group_size = len(anat_grps[g_idx])
+                    if group_size % 32:
+                        raise ValueError(
+                            f"flex-G5 ver2 XML group {g_idx} has {group_size} channels; "
+                            "expected complete 32-channel shanks (including skipped channels)"
+                        )
             local_block_idx = 0
             group_pos = 0
             while group_pos < len(valid_groups):
@@ -1016,17 +1052,20 @@ def build_channel_map_data(
 
                 tchannels = [ch for group_idx in block_groups for ch in anat_grps[group_idx]]
                 n_ch = len(tchannels)
-                template_x, template_y = _flex_g5_layout_coords(64, local_block_idx)
+                if xml_contact_order:
+                    template_x, template_y = _flex_g5_ver2_layout_coords(n_ch, local_block_idx)
+                else:
+                    template_x, template_y = _flex_g5_layout_coords(64, local_block_idx)
                 k_val = local_block_idx + 1
 
-                for ch in tchannels:
-                    template_idx = int(ch) % 64
+                for channel_pos, ch in enumerate(tchannels):
+                    template_idx = channel_pos if xml_contact_order else int(ch) % 64
                     channel_coords.append(
                         {
                             "id": ch,
                             "x": template_x[template_idx] + p_x_offset,
                             "y": template_y[template_idx],
-                            "k": k_val,
+                            "k": k_val + (channel_pos // 64 if xml_contact_order else 0),
                             "p": probe_idx + 1,
                         }
                     )

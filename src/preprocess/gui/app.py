@@ -236,6 +236,7 @@ PROBE_TYPES = (
     A5X12_16_BUZ_LIN_PROBE_TYPE,
     "Buzsaki 5x12",
     "flex-G5",
+    "flex-G5 ver2",
     "staggered",
     "poly2",
     "poly3",
