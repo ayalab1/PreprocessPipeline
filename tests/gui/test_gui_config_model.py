@@ -377,6 +377,64 @@ def test_execution_controls_are_nested_under_ephys(tmp_path: Path, monkeypatch) 
         application.processEvents()
 
 
+def test_persistent_progress_updates_preserve_lines_across_polls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr(
+        "src.preprocess.gui.app._load_default_settings",
+        lambda: PipelineGuiSettings(local_root=str(tmp_path)),
+    )
+    from PySide6.QtWidgets import QApplication
+
+    application = QApplication.instance() or QApplication([])
+    run_dir = tmp_path / "run"
+    state = {"stages": {}}
+    progress_paths = []
+    for stage in StageName:
+        attempt_dir = run_dir / "stages" / stage.value / "attempt-001"
+        attempt_dir.mkdir(parents=True)
+        (attempt_dir / "stdout.log").write_bytes(f"{stage.value} started\r\n".encode())
+        progress_path = attempt_dir / "stderr.log"
+        progress_path.write_bytes(
+            f"\r{stage.value}: 0% 0/4\r{stage.value}: 50% 2/4".encode()
+        )
+        progress_paths.append((stage.value, progress_path))
+        state["stages"][stage.value] = {
+            "selected_attempt": 1, "attempts": [{"attempt": 1}],
+        }
+
+    window = MainWindow()
+    try:
+        window._active_run_dir = run_dir
+        window._tail_persistent_progress_logs(state)
+        window._flush_log_buffer()
+        lines = window.log.toPlainText().splitlines()
+        for stage in StageName:
+            assert f"{stage.value} started" in lines
+            assert f"{stage.value}: 0% 0/4" in lines
+            assert f"{stage.value}: 50% 2/4" in lines
+
+        # Updates have no newline until completion; they must appear on each
+        # poll, and rereading unchanged files must not duplicate earlier text.
+        for stage, path in progress_paths:
+            with path.open("ab") as handle:
+                handle.write(f"\r{stage}: 100% 4/4\nwarning: keep this message\n".encode())
+        window._tail_persistent_progress_logs(state)
+        window._flush_log_buffer()
+        text = window.log.toPlainText()
+        for stage in StageName:
+            assert text.count(f"{stage.value}: 0% 0/4") == 1
+            assert f"{stage.value}: 100% 4/4" in text.splitlines()
+        assert text.count("warning: keep this message") == 3
+        window._tail_persistent_progress_logs(state)
+        window._flush_log_buffer()
+        assert window.log.toPlainText() == text
+    finally:
+        window.close()
+        application.processEvents()
+
+
 def test_persistent_progress_uses_stage_rows_main_log_and_force_stop(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -5261,7 +5261,15 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     label = path.name
                 self._queue_log(f"\n--- {label} ---\n")
-            text = payload.decode(errors="replace").replace("\b", "").replace("\r", "")
+            # tqdm redraws with carriage returns, including before its final
+            # newline. Preserve update boundaries in this append-only log so
+            # percentages/ETA do not concatenate into one unreadable line.
+            text = (
+                payload.decode(errors="replace")
+                .replace("\b", "")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+            )
             self._queue_log(text)
 
     @staticmethod
