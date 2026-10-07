@@ -237,7 +237,6 @@ def _run_preprocess(store: RunStore, spec: AttemptSpec) -> dict[str, Any]:
         **dict(config.job_kwargs),
         "n_jobs": spec.resources.cpus,
         "max_threads_per_worker": 1,
-        "progress_bar": False,
     }
     result = run_preprocess_session(config, sorter_for_disk_check=planned_sorter)
     from .session import preprocess_output_inventory, validate_output_inventory
@@ -273,7 +272,6 @@ def _run_sorting(store: RunStore, spec: AttemptSpec) -> dict[str, Any]:
         **dict(config.job_kwargs),
         "n_jobs": spec.resources.cpus,
         "max_threads_per_worker": 1,
-        "progress_bar": False,
     }
     from .gpu_selection import GpuUsageMonitor, activate_least_used_gpu
     from src.preprocess.channel_layout import load_channel_layout
@@ -389,7 +387,6 @@ def _run_postprocess(store: RunStore, spec: AttemptSpec) -> dict[str, Any]:
     config.job_kwargs = {
         **dict(config.job_kwargs),
         "n_jobs": spec.resources.cpus,
-        "progress_bar": False,
     }
     results = list(run_postprocess_session(config))
     if not results:

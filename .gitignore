@@ -67,6 +67,7 @@ tests
 !/tests/execution/test_gpu_selection.py
 !/tests/execution/test_torch_allocator_default.py
 !/tests/execution/test_input_identity.py
+!/tests/execution/test_progress.py
 !/tests/preprocess/
 /tests/preprocess/*
 !/tests/preprocess/test_state_scoring_memory.py
