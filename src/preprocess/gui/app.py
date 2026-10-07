@@ -4282,33 +4282,50 @@ class MainWindow(QMainWindow):
         self._channel_regions = dialog.channel_regions
         self._append_log(f"Saved anatomical map for CellExplorer: {saved}\n")
 
+    def _create_file_dialog(
+        self, title: str, start: str, file_filter: str = ""
+    ) -> QFileDialog:
+        dialog = QFileDialog(self)
+        # Configure options before setting the initial path. Custom folder
+        # icons can make Qt's file listing wait on network/removable drives.
+        dialog.setOptions(
+            QFileDialog.Option.DontUseNativeDialog
+            | QFileDialog.Option.DontUseCustomDirectoryIcons
+        )
+        dialog.setWindowTitle(title)
+        if file_filter:
+            dialog.setNameFilter(file_filter)
+        initial_path = Path(start).expanduser() if start else Path.cwd()
+        if initial_path.is_dir():
+            dialog.setDirectory(str(initial_path))
+        else:
+            dialog.setDirectory(str(initial_path.parent))
+            dialog.selectFile(initial_path.name)
+        return dialog
+
     def _select_directory(self, title: str, start: str) -> str:
-        dialog = QFileDialog(self, title, start or str(Path.cwd()))
+        dialog = self._create_file_dialog(title, start)
         dialog.setFileMode(QFileDialog.FileMode.Directory)
         dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
         return dialog.selectedFiles()[0] if dialog.exec() else ""
 
     def _select_directories(self, title: str, start: str) -> list[str]:
-        dialog = QFileDialog(self, title, start or str(Path.cwd()))
+        dialog = self._create_file_dialog(title, start)
         dialog.setFileMode(QFileDialog.FileMode.Directory)
         dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
         for view in dialog.findChildren(QAbstractItemView):
             view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         return dialog.selectedFiles() if dialog.exec() else []
 
     def _select_open_file(self, title: str, start: str, file_filter: str) -> str:
-        dialog = QFileDialog(self, title, start or str(Path.cwd()), file_filter)
+        dialog = self._create_file_dialog(title, start, file_filter)
         dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
         dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
         return dialog.selectedFiles()[0] if dialog.exec() else ""
 
     def _select_save_file(self, title: str, start: str, file_filter: str) -> str:
-        dialog = QFileDialog(self, title, start or str(Path.cwd()), file_filter)
+        dialog = self._create_file_dialog(title, start, file_filter)
         dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
         return dialog.selectedFiles()[0] if dialog.exec() else ""
 
     def _browse_basepath(self) -> None:
