@@ -13,6 +13,8 @@ from scipy import signal
 import spikeinterface as si
 import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
+from spikeinterface.preprocessing.basepreprocessor import BasePreprocessor, BasePreprocessorSegment
+from spikeinterface.preprocessing.filter import fix_dtype
 
 from .io import atomic_write_json
 
@@ -156,19 +158,26 @@ def attach_probe_from_chanmap(recording: Any, chanmap_mat_path: Path, *, origina
     valid_device_ids = device_ch_inds[valid_mask]
     device_ch_inds = np.asarray([positions[int(ch)] for ch in valid_device_ids])
 
+    # Keep physical positions for analysis. A flattened view belongs only in
+    # exports that cannot display a 3-D probe.
+    use_3d = has_z and bool(np.any(z != 0))
     probegroup = ProbeGroup()
     unique_probes = [p for p in np.unique(probe_ids) if p > 0]
     for p_id in unique_probes:
         mask = probe_ids == p_id
         if not np.any(mask):
             continue
-        probe = Probe(ndim=2, si_units="um")
-        # Project probe depth into the plane for tools that require unique 2-D contacts.
-        x_2d = x[mask] + z[mask] if has_z else x[mask]
+        probe = Probe(ndim=3 if use_3d else 2, si_units="um")
+        positions = np.column_stack((x[mask], y[mask], z[mask])) if use_3d else np.column_stack((x[mask], y[mask]))
+        # ProbeInterface requires contact-plane axes for 3-D positions.
+        plane_axes = None
+        if use_3d:
+            plane_axes = np.broadcast_to(np.eye(3)[:2], (positions.shape[0], 2, 3)).copy()
         probe.set_contacts(
-            positions=np.column_stack((x_2d, y[mask])),
+            positions=positions,
             shapes="circle",
             shape_params={"radius": 5},
+            plane_axes=plane_axes,
             shank_ids=shank_ids[mask],
         )
         probe.set_device_channel_indices(device_ch_inds[mask])
@@ -941,6 +950,63 @@ def select_recording_channels(recording: Any, channel_ids: list[int]) -> Any:
     )
 
 
+def analysis_channel_locations(recording: Any) -> np.ndarray:
+    """Return physical 3-D locations when available, otherwise the 2-D layout."""
+    locations = np.asarray(recording.get_channel_locations(), dtype=float)
+    try:
+        physical = np.asarray(recording.get_channel_locations(axes="xyz"), dtype=float)
+    except (TypeError, ValueError, IndexError):
+        return locations
+    if physical.ndim == 2 and physical.shape[1] == 3 and np.any(physical[:, 2] != 0):
+        return physical
+    return locations
+
+
+class _LocalMedianReference3D(BasePreprocessor):
+    """Local median reference using physical distances in SpikeInterface 0.103."""
+
+    def __init__(self, recording: Any, local_radius_um: tuple[float, float]):
+        locations = analysis_channel_locations(recording)
+        if locations.shape[1] != 3:
+            raise ValueError("3-D local reference requires physical 3-D channel locations")
+        distances = np.linalg.norm(locations[:, None, :] - locations[None, :, :], axis=2)
+        np.fill_diagonal(distances, np.inf)
+        r_min, r_max = sorted(float(v) for v in local_radius_um)
+        neighbors: list[np.ndarray] = []
+        for row in distances:
+            in_annulus = np.flatnonzero((row >= r_min) & (row <= r_max))
+            if in_annulus.size >= 5:
+                neighbors.append(in_annulus)
+            else:
+                # Match SpikeInterface's fallback to the five closest contacts
+                # beyond the inner radius.
+                outside_inner = np.flatnonzero(np.isfinite(row) & (row >= r_min))
+                neighbors.append(outside_inner[np.argsort(row[outside_inner])[:5]])
+
+        dtype = fix_dtype(recording, None)
+        super().__init__(recording, dtype=dtype)
+        for parent_segment in recording._recording_segments:
+            self.add_recording_segment(_LocalMedianReference3DSegment(parent_segment, neighbors, dtype))
+        self._kwargs = dict(recording=recording, local_radius_um=tuple(local_radius_um))
+
+
+class _LocalMedianReference3DSegment(BasePreprocessorSegment):
+    def __init__(self, parent_recording_segment: Any, neighbors: list[np.ndarray], dtype: np.dtype):
+        super().__init__(parent_recording_segment)
+        self.neighbors = neighbors
+        self.dtype = dtype
+
+    def get_traces(self, start_frame: int, end_frame: int, channel_indices: Any) -> np.ndarray:
+        traces = self.parent_recording_segment.get_traces(start_frame, end_frame, slice(None))
+        selected = np.atleast_1d(np.arange(len(self.neighbors))[channel_indices])
+        output = np.empty((traces.shape[0], len(selected)), dtype=np.float32)
+        for output_index, channel_index in enumerate(selected):
+            output[:, output_index] = traces[:, channel_index] - np.median(
+                traces[:, self.neighbors[channel_index]], axis=1
+            )
+        return output.astype(self.dtype, copy=False)
+
+
 def apply_preprocessing(
     recording_raw: Any,
     bandpass_min_hz: float,
@@ -961,7 +1027,7 @@ def apply_preprocessing(
     if reference_normalized == "local":
         has_locations = True
         try:
-            locations = rec_f.get_channel_locations()
+            locations = analysis_channel_locations(rec_f)
         except Exception:
             has_locations = False
 
@@ -981,12 +1047,15 @@ def apply_preprocessing(
                     "Increase CMR radius max, or set common median reference to "
                     "global/none."
                 )
-            rec_ref = spre.common_reference(
-                rec_f,
-                reference="local",
-                local_radius=list(local_radius_um),
-                operator="median",
-            )
+            if locations.shape[1] == 3:
+                rec_ref = _LocalMedianReference3D(rec_f, local_radius_um)
+            else:
+                rec_ref = spre.common_reference(
+                    rec_f,
+                    reference="local",
+                    local_radius=list(local_radius_um),
+                    operator="median",
+                )
         else:
             print("Channel locations are unavailable. Falling back to global median reference.")
             rec_ref = spre.common_reference(rec_f, reference="global", operator="median")

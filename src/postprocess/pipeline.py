@@ -19,6 +19,7 @@ import spikeinterface as si
 import spikeinterface.curation as scur
 import spikeinterface.extractors as se
 import spikeinterface.qualitymetrics as sqm
+from spikeinterface.core import estimate_templates_with_accumulator, random_spikes_selection
 from spikeinterface.exporters import export_to_phy
 
 from .unit_classify import mark_noise_clusters_from_metrics
@@ -26,6 +27,7 @@ from .unit_split import autosplit_outliers_pca
 
 from ..preprocess.metafile import PreprocessConfig, PreprocessResult
 from ..preprocess.recording import (
+    analysis_channel_locations,
     apply_preprocessing,
     attach_probe_and_remove_bad_channels,
     preprocess_selected_channels_preserve_shape,
@@ -755,6 +757,49 @@ def _sorting_analyzer_sparsity_kwargs(config: PostprocessConfig) -> dict[str, An
     return kwargs
 
 
+def _physical_3d_sparsity(config: PostprocessConfig, sorting, recording):
+    """Build geometry-based sparsity with physical distances for 3-D maps.
+
+    SpikeInterface 0.103.2's analyzer omits z when it estimates radius and
+    closest-channel sparsity, even when its probe has three dimensions.
+    """
+    if not config.analyzer_sparse or config.sparsity_method not in {"radius", "closest_channels"}:
+        return None
+    locations = analysis_channel_locations(recording)
+    if locations.shape[1] != 3:
+        return None
+
+    # The built-in estimator reconstructs a 2-D dummy probe in SI 0.103.2;
+    # coincident x,y contacts on opposite faces then fail its uniqueness check.
+    sampling_frequency = recording.get_sampling_frequency()
+    nbefore = int(1.0 * sampling_frequency / 1000.0)
+    nafter = int(2.5 * sampling_frequency / 1000.0)
+    num_samples = [recording.get_num_samples(segment_index) for segment_index in range(recording.get_num_segments())]
+    selected_spike_indices = random_spikes_selection(
+        sorting, num_samples, method="uniform", max_spikes_per_unit=100,
+        margin_size=max(nbefore, nafter), seed=2205,
+    )
+    templates = estimate_templates_with_accumulator(
+        recording,
+        sorting.to_spike_vector()[selected_spike_indices],
+        sorting.unit_ids,
+        nbefore,
+        nafter,
+        return_in_uV=False,
+        job_name="estimate_3d_sparsity",
+        **config.job_kwargs,
+    )
+    best_indices = np.argmax(np.abs(np.min(templates, axis=1)), axis=1)
+    distances = np.linalg.norm(locations[best_indices, None, :] - locations[None, :, :], axis=2)
+    if config.sparsity_method == "radius":
+        mask = distances <= float(config.sparsity_radius_um)
+    else:
+        mask = np.zeros_like(distances, dtype=bool)
+        nearest = np.argsort(distances, axis=1)[:, :int(config.sparsity_num_channels)]
+        np.put_along_axis(mask, nearest, True, axis=1)
+    return si.ChannelSparsity(mask, sorting.unit_ids, recording.channel_ids)
+
+
 def _resolve_effective_chanmap_for_postprocess(
     chanmap_mat_path: Path | None,
     *,
@@ -924,6 +969,12 @@ def _fix_phy_channel_map_file(output_folder: Path) -> None:
     np.save(channel_map_file, np.asarray(channel_map_si, dtype="int32"))
 
 
+def _phy_display_positions(recording, channel_ids: list[int]) -> np.ndarray:
+    """Flatten 3-D contacts only for Phy's two-column display file."""
+    xyz = recording.get_channel_locations(channel_ids=channel_ids, axes="xyz")
+    return np.column_stack((xyz[:, 0] + xyz[:, 2], xyz[:, 1])).astype("float32")
+
+
 def _export_phy_to_output_folder(
     *,
     sorting_analyzer,
@@ -965,6 +1016,13 @@ def _export_phy_to_output_folder(
         verbose=True,
         **job_kwargs,
     )
+    physical = analysis_channel_locations(sorting_analyzer.recording)
+    if physical.shape[1] == 3:
+        # Phy accepts a flat channel map; keep this projection confined to its
+        # display file and leave the analyzer's physical geometry intact.
+        exported_ids = np.load(phy_export_tmp / "channel_map_si.npy").tolist()
+        positions_2d = _phy_display_positions(sorting_analyzer.recording, exported_ids)
+        np.save(phy_export_tmp / "channel_positions.npy", positions_2d)
     write_centered_native_templates(sorting_analyzer, phy_export_tmp, job_kwargs)
     contacts = sorting_analyzer.recording.get_property("contact_vector")
     if contacts is not None and {"shank_ids", "probe_index"}.issubset(contacts.dtype.names or ()):
@@ -1180,11 +1238,19 @@ def _run_postprocess_single_session_impl(
         return recording_for_post
 
     def _create_stage_analyzer(stage_name: str, sorting_obj):
+        stage_recording = _ensure_recording_for_post()
         analyzer_kwargs = {
             "sorting": sorting_obj,
-            "recording": _ensure_recording_for_post(),
+            "recording": stage_recording,
             **_sorting_analyzer_sparsity_kwargs(config),
         }
+        physical_sparsity = _physical_3d_sparsity(config, sorting_obj, stage_recording)
+        if physical_sparsity is not None:
+            analyzer_kwargs = {
+                "sorting": sorting_obj,
+                "recording": stage_recording,
+                "sparsity": physical_sparsity,
+            }
         if config.analyzer_format == "binary_folder":
             assert analyzer_cache_root is not None
             stage_folder = analyzer_cache_root / stage_name

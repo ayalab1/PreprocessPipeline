@@ -46,10 +46,12 @@ Intan, Open Ephys, and merged WILD recordings use acquisition-specific readers.
 Mixing formats does not remove the requirement for compatible ephys channel
 layout, recording rate, and channel meanings. Open Ephys ADC columns are handled
 separately from the ephys channel map.
-For an explicitly selected 3-D channel map with `zcoords`, probe attachment
-projects `xcoords + zcoords` into 2-D contact positions and retains the original
-`zcoords` as channel metadata. Check that this projection gives distinct
-positions for the selected probe before using geometry-based processing.
+For an explicitly selected 3-D channel map with nonzero `zcoords`, probe
+attachment keeps physical `(x, y, z)` contact positions. Local CMR and
+radius/closest-channel postprocess sparsity use 3-D distances. Phy receives a
+separate 2-D `(x + z, y)` projection for its channel-map display.
+SpikeInterface 0.103.2 still computes its built-in spike and unit locations
+with 2-D assumptions; those location estimates are not physical 3-D results.
 
 ## Preprocessing
 
