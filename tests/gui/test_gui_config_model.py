@@ -1273,6 +1273,28 @@ def test_preprocess_config_preserves_sorter_partition_mode(tmp_path: Path) -> No
     assert loaded.preprocess.sorter_partition_mode == "shank"
 
 
+def test_merge_censor_round_trips_from_gui_to_config(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        window.merge_censor.setValue(0.0)
+        settings = window._collect_settings()
+        settings.basepath = str(tmp_path / "session")
+        settings.local_root = str(tmp_path / "local")
+        loaded = PipelineGuiSettings.from_json(settings.to_json())
+        window._apply_settings(loaded)
+
+        assert loaded.postprocess.merge_censor_ms == 0.0
+        assert window.merge_censor.value() == 0.0
+        assert loaded.to_postprocess_config().merge_censor_ms == 0.0
+    finally:
+        window.close()
+        application.processEvents()
+
+
 def test_execution_resources_round_trip_exact_slurm_cpu_count_without_local_cap(
     tmp_path: Path,
 ) -> None:

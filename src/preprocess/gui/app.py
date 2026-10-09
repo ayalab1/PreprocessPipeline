@@ -3499,6 +3499,7 @@ class MainWindow(QMainWindow):
         form = self._form_layout(curation)
         self.exclude_groups = QLineEdit("noise")
         self.duplicate_censored = self._double_spin(0.0, 1000.0, 0.5)
+        self.merge_censor = self._double_spin(0.0, 1000.0, 0.5)
         self.duplicate_threshold = self._double_spin(0.0, 1.0, 0.5)
         self.merge_min_spikes = self._spin(0, 1000000, 100)
         self.merge_corr = self._double_spin(0.0, 10.0, 0.25)
@@ -3516,6 +3517,7 @@ class MainWindow(QMainWindow):
 
         form.addRow("Exclude groups", self.exclude_groups)
         form.addRow("Duplicate censor ms", self.duplicate_censored)
+        form.addRow("Merge censor ms", self.merge_censor)
         form.addRow("Duplicate threshold", self.duplicate_threshold)
         form.addRow("Merge min spikes", self.merge_min_spikes)
         form.addRow("Merge corr diff", self.merge_corr)
@@ -3550,6 +3552,7 @@ class MainWindow(QMainWindow):
             self.post_apply_preprocess,
             self.exclude_groups,
             self.duplicate_censored,
+            self.merge_censor,
             self.duplicate_threshold,
             self.merge_min_spikes,
             self.merge_corr,
@@ -6294,6 +6297,7 @@ class MainWindow(QMainWindow):
             apply_preprocess=self.post_apply_preprocess.isChecked(),
             exclude_cluster_groups=[g.strip() for g in self.exclude_groups.text().split(",") if g.strip()],
             duplicate_censored_period_ms=self.duplicate_censored.value(),
+            merge_censor_ms=self.merge_censor.value(),
             duplicate_threshold=self.duplicate_threshold.value(),
             merge_min_spikes=self.merge_min_spikes.value(),
             merge_corr_diff_thresh=self.merge_corr.value(),
@@ -6474,6 +6478,7 @@ class MainWindow(QMainWindow):
             self.post_apply_preprocess.setChecked(pp.apply_preprocess)
             self.exclude_groups.setText(", ".join(pp.exclude_cluster_groups))
             self.duplicate_censored.setValue(pp.duplicate_censored_period_ms)
+            self.merge_censor.setValue(pp.merge_censor_ms)
             self.duplicate_threshold.setValue(pp.duplicate_threshold)
             self.merge_min_spikes.setValue(pp.merge_min_spikes)
             self.merge_corr.setValue(pp.merge_corr_diff_thresh)

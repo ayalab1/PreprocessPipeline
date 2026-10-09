@@ -166,7 +166,8 @@ XML/Phy rate or channel-count metadata is rejected.
 | `dat_path` | `""` | Explicit recording binary matching the sorting. Empty uses Phy/session path resolution. |
 | `apply_preprocess` | `false` | Apply the preprocessing filter/reference settings to a raw postprocess recording. Leave false for an already processed recording. |
 | `exclude_cluster_groups` | `["noise"]` | Phy labels to exclude. Add `mua` if those clusters should also be excluded. |
-| `duplicate_censored_period_ms` | `0.5` | Coincidence window used to identify duplicate spike trains, ms. |
+| `duplicate_censored_period_ms` | `0.5` | Window for removing nearby spikes within each unit before curation, ms. At `0`, only exact same-sample duplicates are removed. |
+| `merge_censor_ms` | `0.5` | Censor window when merging units, ms. Set to `0` to retain spikes at distinct sample times within a short interval. |
 | `duplicate_threshold` | `0.5` | Duplicate-overlap threshold used by duplicate-unit removal. |
 | `merge_min_spikes` | `100` | Minimum spike count for automatic merge candidates. |
 | `merge_corr_diff_thresh` | `0.25` | Correlogram-difference threshold for merging. |
