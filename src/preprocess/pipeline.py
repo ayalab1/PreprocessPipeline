@@ -7,6 +7,7 @@ from scipy.io import loadmat, savemat
 import spikeinterface.extractors as se
 
 from .artifact_removal import detect_high_amplitude_artifacts, remove_artifacts
+from .interval_artifacts import merge_trigger_windows
 from .io import atomic_savemat
 from .events import export_analog_digital_events, materialize_intermediate_dat
 from .behavior import _find_video_file, _read_video_fps
@@ -531,6 +532,24 @@ def _load_highamp_frames_by_group(
     for gid in np.unique(group_ids_arr):
         by_group[int(gid)] = np.unique(frames[group_ids_arr == gid]).astype(int).tolist()
     return by_group
+
+
+def _load_highamp_intervals_by_group(
+    event_path: Path, *, sampling_frequency: float, group_mode: str
+) -> dict[int, np.ndarray]:
+    event_struct = loadmat(event_path, simplify_cells=True).get("artifactHigh")
+    if not isinstance(event_struct, dict) or "timestamps" not in event_struct:
+        raise ValueError(f"Invalid artifactHigh intervals in {event_path}")
+    timestamps = np.asarray(event_struct["timestamps"], dtype=np.float64).reshape(-1, 2)
+    if not np.all(np.isfinite(timestamps)):
+        raise ValueError(f"Non-finite artifactHigh intervals in {event_path}")
+    intervals = np.rint(timestamps * sampling_frequency).astype(np.int64)
+    if group_mode == "all":
+        return {0: intervals}
+    group_ids = np.asarray(event_struct.get("group_id", []), dtype=np.int64).reshape(-1)
+    if len(group_ids) != len(intervals):
+        raise ValueError(f"artifactHigh.group_id length does not match intervals in {event_path}")
+    return {int(gid): intervals[group_ids == gid] for gid in np.unique(group_ids)}
 
 
 def run_preprocess_session(
@@ -1080,24 +1099,33 @@ def run_preprocess_session(
         existing_high_events_path = output_dir / f"{basename}.artifactHigh.events.mat"
         if existing_high_events_path.exists() and not config.overwrite:
             print(f"Reusing high-amplitude artifact events and applying removal: {existing_high_events_path}")
-            highamp_frames_by_group = _load_highamp_frames_by_group(
-                existing_high_events_path,
-                sampling_frequency=effective_sr,
-                group_mode=highamp_group_mode,
+            event_struct = loadmat(existing_high_events_path, simplify_cells=True).get("artifactHigh")
+            if not isinstance(event_struct, dict):
+                raise ValueError(f"Invalid artifactHigh structure in {existing_high_events_path}")
+            stored_merge_intervals = bool(
+                np.asarray(event_struct.get("merged_intervals", False)).reshape(-1)[0]
             )
-            pairs = sorted(
-                (frame, gid)
-                for gid, frames in highamp_frames_by_group.items()
-                for frame in frames
-            )
-            if not pairs:
+            if stored_merge_intervals != config.highamp_merge_intervals:
                 raise ValueError(
-                    "artifact_highamp_group_mode != 'none' but existing artifactHigh.events.mat "
-                    f"contains no peaks: {existing_high_events_path}"
+                    "Existing artifactHigh.events.mat uses a different interval-merging setting. "
+                    "Set overwrite=True to regenerate it."
                 )
-            artifact_high_frames = np.asarray([p[0] for p in pairs], dtype=np.int64)
-            artifact_high_group_ids = np.asarray([p[1] for p in pairs], dtype=np.int64)
-            artifact_high_timestamps_sec = artifact_high_frames.astype(np.float64) / float(effective_sr)
+            if config.highamp_merge_intervals:
+                highamp_events_by_group = _load_highamp_intervals_by_group(
+                    existing_high_events_path,
+                    sampling_frequency=effective_sr,
+                    group_mode=highamp_group_mode,
+                )
+                has_events = any(len(intervals) for intervals in highamp_events_by_group.values())
+            else:
+                highamp_events_by_group = _load_highamp_frames_by_group(
+                    existing_high_events_path,
+                    sampling_frequency=effective_sr,
+                    group_mode=highamp_group_mode,
+                )
+                has_events = any(len(frames) for frames in highamp_events_by_group.values())
+            if not has_events:
+                raise ValueError(f"Existing artifactHigh.events.mat contains no events: {existing_high_events_path}")
 
             recording_for_highamp = apply_artifact_group_mode(
                 recording_preprocessed,
@@ -1110,16 +1138,18 @@ def run_preprocess_session(
                 selected_channel_ids=good_channels_0based,
                 transform_fn=lambda rec_sel: remove_artifacts(
                     recording_in=rec_sel,
-                    artifact_per_group=highamp_frames_by_group,
+                    artifact_per_group=highamp_events_by_group,
                     by_group=(highamp_group_mode != "all"),
                     ms_before=config.highamp_ms_before,
                     ms_after=config.highamp_ms_after,
                     mode=config.highamp_mode,
+                    use_intervals=config.highamp_merge_intervals,
                 )[0],
             )
             intermediate_dat_paths["artifact_high_events"] = existing_high_events_path
         else:
             highamp_frames_by_group: dict[int, list[int]] = {}
+            highamp_intervals_by_group: dict[int, np.ndarray] = {}
 
             recording_for_highamp = apply_artifact_group_mode(
                 recording_preprocessed,
@@ -1141,13 +1171,24 @@ def run_preprocess_session(
                 )
                 for gid, frames in detected.items():
                     highamp_frames_by_group[int(gid)] = [int(x) for x in frames]
+                    if config.highamp_merge_intervals:
+                        highamp_intervals_by_group[int(gid)] = merge_trigger_windows(
+                            frames,
+                            sampling_frequency=effective_sr,
+                            num_samples=rec_sel.get_total_samples(),
+                            ms_before=config.highamp_ms_before,
+                            ms_after=config.highamp_ms_after,
+                        )
                 return remove_artifacts(
                     recording_in=rec_sel,
-                    artifact_per_group=detected,
+                    artifact_per_group=(
+                        highamp_intervals_by_group if config.highamp_merge_intervals else detected
+                    ),
                     by_group=(highamp_group_mode != "all"),
                     ms_before=config.highamp_ms_before,
                     ms_after=config.highamp_ms_after,
                     mode=config.highamp_mode,
+                    use_intervals=config.highamp_merge_intervals,
                 )[0]
 
             recording_preprocessed = apply_transform_to_selected_channels_preserve_shape(
@@ -1155,21 +1196,36 @@ def run_preprocess_session(
                 selected_channel_ids=good_channels_0based,
                 transform_fn=_apply_highamp_artifacts,
             )
-            if highamp_frames_by_group:
-                pairs = sorted(
-                    (frame, gid)
-                    for gid, frames in highamp_frames_by_group.items()
-                    for frame in frames
+            if config.highamp_merge_intervals:
+                intervals_with_group = sorted(
+                    (int(start), int(stop), gid)
+                    for gid, intervals in highamp_intervals_by_group.items()
+                    for start, stop in intervals
                 )
-                if pairs:
-                    artifact_high_frames = np.asarray([p[0] for p in pairs], dtype=np.int64)
-                    artifact_high_group_ids = np.asarray([p[1] for p in pairs], dtype=np.int64)
-                    artifact_high_timestamps_sec = artifact_high_frames.astype(np.float64) / float(effective_sr)
-            high_timestamps, high_peaks, high_duration_sec = _artifact_windows_from_peaks(
-                artifact_high_timestamps_sec,
-                ms_before=config.highamp_ms_before,
-                ms_after=config.highamp_ms_after,
-            )
+                high_timestamps = np.asarray(
+                    [(start, stop) for start, stop, _ in intervals_with_group], dtype=np.float64
+                ).reshape(-1, 2) / float(effective_sr)
+                artifact_high_group_ids = np.asarray(
+                    [gid for _, _, gid in intervals_with_group], dtype=np.int64
+                )
+                high_peaks = high_timestamps.mean(axis=1)
+                high_duration_sec = high_timestamps[:, 1] - high_timestamps[:, 0]
+            else:
+                if highamp_frames_by_group:
+                    pairs = sorted(
+                        (frame, gid)
+                        for gid, frames in highamp_frames_by_group.items()
+                        for frame in frames
+                    )
+                    if pairs:
+                        artifact_high_frames = np.asarray([p[0] for p in pairs], dtype=np.int64)
+                        artifact_high_group_ids = np.asarray([p[1] for p in pairs], dtype=np.int64)
+                        artifact_high_timestamps_sec = artifact_high_frames.astype(np.float64) / float(effective_sr)
+                high_timestamps, high_peaks, high_duration_sec = _artifact_windows_from_peaks(
+                    artifact_high_timestamps_sec,
+                    ms_before=config.highamp_ms_before,
+                    ms_after=config.highamp_ms_after,
+                )
             high_events_path = _save_artifact_events_mat(
                 output_path=output_dir / f"{basename}.artifactHigh.events.mat",
                 struct_name="artifactHigh",
@@ -1179,6 +1235,7 @@ def run_preprocess_session(
                 extra_fields={
                     "group_id": artifact_high_group_ids.reshape(-1, 1),
                     "source": "detect_high_amplitude_artifacts",
+                    "merged_intervals": int(config.highamp_merge_intervals),
                 },
             )
             intermediate_dat_paths["artifact_high_events"] = high_events_path

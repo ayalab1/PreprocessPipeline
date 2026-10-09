@@ -46,6 +46,7 @@ class PreprocessConfig:
     highamp_seed: int = 0
     highamp_chunk_s: float = 10.0
     highamp_dead_time_ms: float = 2.0
+    highamp_merge_intervals: bool = False
     highamp_n_jobs: int = field(default_factory=_default_parallel_n_jobs)
     highamp_ms_before: float = 1.0
     highamp_ms_after: float = 1.0
