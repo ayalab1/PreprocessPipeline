@@ -46,6 +46,10 @@ Intan, Open Ephys, and merged WILD recordings use acquisition-specific readers.
 Mixing formats does not remove the requirement for compatible ephys channel
 layout, recording rate, and channel meanings. Open Ephys ADC columns are handled
 separately from the ephys channel map.
+For an explicitly selected 3-D channel map with `zcoords`, probe attachment
+projects `xcoords + zcoords` into 2-D contact positions and retains the original
+`zcoords` as channel metadata. Check that this projection gives distinct
+positions for the selected probe before using geometry-based processing.
 
 ## Preprocessing
 

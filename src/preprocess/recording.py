@@ -112,6 +112,8 @@ def attach_probe_from_chanmap(recording: Any, chanmap_mat_path: Path, *, origina
 
     x = np.asarray(mat["xcoords"]).flatten()
     y = np.asarray(mat["ycoords"]).flatten()
+    has_z = "zcoords" in mat
+    z = np.asarray(mat["zcoords"]).flatten() if has_z else np.zeros_like(x)
     shank_ids = np.asarray(mat["kcoords"]).flatten()
     probe_ids = np.asarray(mat.get("probe_ids", np.ones_like(x))).flatten()
     device_ch_inds = _chanmap_device_channel_indices(mat)
@@ -119,6 +121,7 @@ def attach_probe_from_chanmap(recording: Any, chanmap_mat_path: Path, *, origina
     n_contacts = min(
         x.size,
         y.size,
+        z.size,
         shank_ids.size,
         probe_ids.size,
         device_ch_inds.size,
@@ -128,6 +131,7 @@ def attach_probe_from_chanmap(recording: Any, chanmap_mat_path: Path, *, origina
 
     x = x[:n_contacts]
     y = y[:n_contacts]
+    z = z[:n_contacts]
     shank_ids = shank_ids[:n_contacts]
     probe_ids = probe_ids[:n_contacts]
     device_ch_inds = device_ch_inds[:n_contacts]
@@ -145,10 +149,12 @@ def attach_probe_from_chanmap(recording: Any, chanmap_mat_path: Path, *, origina
 
     x = x[valid_mask]
     y = y[valid_mask]
+    z = z[valid_mask]
     shank_ids = shank_ids[valid_mask]
     probe_ids = probe_ids[valid_mask]
     positions = {channel: index for index, channel in enumerate(original_ids)}
-    device_ch_inds = np.asarray([positions[int(ch)] for ch in device_ch_inds[valid_mask]])
+    valid_device_ids = device_ch_inds[valid_mask]
+    device_ch_inds = np.asarray([positions[int(ch)] for ch in valid_device_ids])
 
     probegroup = ProbeGroup()
     unique_probes = [p for p in np.unique(probe_ids) if p > 0]
@@ -157,8 +163,10 @@ def attach_probe_from_chanmap(recording: Any, chanmap_mat_path: Path, *, origina
         if not np.any(mask):
             continue
         probe = Probe(ndim=2, si_units="um")
+        # Project probe depth into the plane for tools that require unique 2-D contacts.
+        x_2d = x[mask] + z[mask] if has_z else x[mask]
         probe.set_contacts(
-            positions=np.column_stack((x[mask], y[mask])),
+            positions=np.column_stack((x_2d, y[mask])),
             shapes="circle",
             shape_params={"radius": 5},
             shank_ids=shank_ids[mask],
@@ -191,6 +199,23 @@ def attach_probe_from_chanmap(recording: Any, chanmap_mat_path: Path, *, origina
                 stacklevel=2,
             )
             return recording
+
+    if has_z:
+        z_by_channel = {int(ch): float(depth) for ch, depth in zip(valid_device_ids, z, strict=True)}
+        try:
+            channel_ids = [int(ch) for ch in recording.get_channel_ids()]
+            _set_channel_property_compat(
+                recording,
+                channel_ids,
+                "zcoords",
+                [z_by_channel.get(ch, 0.0) for ch in channel_ids],
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Could not retain zcoords metadata from {chanmap_mat_path}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     # Keep both probe-level and shank-level group properties for artifact routing.
     try:
