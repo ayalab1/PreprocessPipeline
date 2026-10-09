@@ -95,13 +95,15 @@ the other modes choose the scope over which events are applied/detected.
 | `remove_highamp_artifacts` | `false` | Enable high-amplitude artifact detection/removal. |
 | `artifact_highamp_group_mode` | `"shank"` | High-amplitude detection/removal scope; effective mode is `none` when disabled. |
 | `highamp_threshold_sigma` | `10.0` | Detection threshold in estimated noise-standard-deviation units. |
+| `highamp_dead_time_ms` | `1.0` | Minimum separation between accepted high-amplitude detections, ms. |
 | `highamp_ms_before` | `2.0` | Removal window before a detected event, ms. |
 | `highamp_ms_after` | `2.0` | Removal window after a detected event, ms. |
 | `highamp_mode` | `"linear"` | Replacement method: `linear`, `cubic`, or `"0"`. |
 
 The JSON adapter fixes high-amplitude noise estimation to 500 one-second
-windows, seed 0, one-second processing chunks, and a one-millisecond dead time.
-Those controls are lower-level Python parameters, not additional GUI JSON keys.
+windows, seed 0, and one-second processing chunks. Those controls are lower-level
+Python parameters, not additional GUI JSON keys. Dead time suppresses nearby
+detections; a long artifact can still produce more than one accepted detection.
 
 ### LFP and state scoring
 
