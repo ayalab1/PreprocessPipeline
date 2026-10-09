@@ -49,6 +49,12 @@ Nchan = rez.ops.Nchan;
 connected   = rez.connected(:);
 xcoords     = rez.xcoords(:);
 ycoords     = rez.ycoords(:);
+% zcoords: present for 3-D probes (e.g. double-sided shanks), else zeros
+if isfield(rez, 'zcoords')
+    zcoords = rez.zcoords(:);
+else
+    zcoords = zeros(size(xcoords));
+end
 chanMap     = rez.ops.chanMap(:);
 chanMap0ind = chanMap - 1;
 
@@ -91,9 +97,88 @@ if ~isempty(savePath)
     chanMap0ind = int32(chanMap0ind);
     
     writeNPY(chanMap0ind(conn), fullfile(savePath, 'channel_map.npy'));
-    %writeNPY(connected, fullfile(savePath, 'connected.npy'));
-%     writeNPY(Fs, fullfile(savePath, 'Fs.npy'));
-    writeNPY([xcoords(conn) ycoords(conn)], fullfile(savePath, 'channel_positions.npy'));
+    % Project 3-D geometry to 2-D for Phy's channel map viewer.
+    % Baseline: xcoords_2d = xcoords + zcoords, which shifts each shank
+    % horizontally by its z-depth so they don't overlap in Phy.
+    % For 2-D probes zcoords is all-zeros so this is a no-op.
+    %
+    % Additional correction for double-sided shanks (detected via rez.sidecoords):
+    %   side 0 (first appearing in chanMap) -> mean(xcoords of that side)
+    %   side 1 (second side)               -> side-0 x + 0.5 * inter-shank distance
+    % Inter-shank distance is computed per adjacent shank pair (varies across probes).
+    % Edge case: last shank reuses the spacing from the previous shank pair.
+
+    % Step 1: baseline 2-D projection (restores correct shank x-separation for
+    % all probes including single-sided 3-D ones; no-op for 2-D probes).
+    xcoords_2d = xcoords + zcoords;
+
+    % Step 2: side-aware x correction for double-sided shanks (optional).
+    % xc is filtered to Nchan via (conn); sc/kc come from rez fields that
+    % preprocessData.m already filtered to Nchan – do NOT re-index with conn.
+    if any(zcoords(conn) ~= 0) && isfield(rez, 'sidecoords') && isfield(rez.ops, 'kcoords')
+        xc = xcoords_2d(conn);  % working copy – Nchan (connected channels only)
+        % NOTE: rez.sidecoords and rez.ops.kcoords are already Nchan-length
+        % (filtered by preprocessData.m), so do NOT index them with conn.
+        sc = rez.sidecoords(:);
+        kc = rez.ops.kcoords(:);
+
+        % Unique shanks in first-appearance order
+        [~, firstIdx] = unique(kc, 'first');
+        [~, sortOrd]  = sort(firstIdx);
+        uShanks = unique(kc);
+        uShanks = uShanks(sortOrd);
+
+        % Pass 1: representative x per shank (mean of first-appearing side)
+        shankX = nan(numel(uShanks), 1);
+        for si = 1:numel(uShanks)
+            shMask  = kc == uShanks(si);
+            uSides  = unique(sc(shMask));
+            if numel(uSides) == 2
+                firstSide = sc(find(shMask, 1));
+                shankX(si) = mean(xc(shMask & (sc == firstSide)));
+            else
+                shankX(si) = mean(xc(shMask));
+            end
+        end
+
+        % Pass 2: offset the second face of each double-sided shank
+        prevHalfDist = NaN;
+        for si = 1:numel(uShanks)
+            shMask = kc == uShanks(si);
+            uSides = unique(sc(shMask));
+
+            if numel(uSides) ~= 2
+                % Single-sided – update spacing tracker and move on
+                if si < numel(uShanks)
+                    prevHalfDist = abs(shankX(si+1) - shankX(si)) / 2;
+                end
+                continue;
+            end
+
+            % Determine half inter-shank distance for this shank
+            if si < numel(uShanks)
+                halfDist = abs(shankX(si+1) - shankX(si)) / 2;
+                prevHalfDist = halfDist;
+            elseif ~isnan(prevHalfDist)
+                halfDist = prevHalfDist;  % last shank: reuse previous spacing
+            else
+                halfDist = 0;
+                warning('rezToPhy: last shank is double-sided but no previous inter-shank distance available; x-offset skipped.');
+            end
+
+            firstSide  = sc(find(shMask, 1));
+            secondSide = uSides(uSides ~= firstSide);
+            side0 = shMask & (sc == firstSide);
+            side1 = shMask & (sc == secondSide);
+            x0 = mean(xc(side0));
+            xc(side0) = x0;
+            xc(side1) = x0 + halfDist;
+        end
+
+        xcoords_2d(conn) = xc;  % write corrected positions back
+    end
+    ycoords_2d = ycoords;
+    writeNPY([xcoords_2d(conn) ycoords_2d(conn)], fullfile(savePath, 'channel_positions.npy'));
     
     writeNPY(templateFeatures, fullfile(savePath, 'template_features.npy'));
     writeNPY(templateFeatureInds'-1, fullfile(savePath, 'template_feature_ind.npy'));% -1 for zero indexing

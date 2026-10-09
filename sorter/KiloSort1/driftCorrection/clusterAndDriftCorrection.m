@@ -33,7 +33,9 @@ uBase = uBase(1:ncurr, :);
 % compute covariance matrix
 sigDrift = 15;
 sigShift = 20;
-chanDists= bsxfun(@minus, rez.yc, rez.yc').^2 + bsxfun(@minus, rez.xc, rez.xc').^2;
+% 3-D channel distances: includes z so opposite-face channels decouple naturally
+chanDists= bsxfun(@minus, rez.yc, rez.yc').^2 + bsxfun(@minus, rez.xc, rez.xc').^2 ...
+         + bsxfun(@minus, rez.zc, rez.zc').^2;
 iCovChans = my_inv(exp(-chanDists/(2*sigDrift^2)), 1e-6);
 
 Nfilt = ops.Nfilt;
@@ -47,9 +49,9 @@ deltay = zeros(ops.Nchan, numel(indBatch));
 
 for i = 1:10
     % resample spatial masks up and down
-    Uup   = shift_data(reshape(U, ops.Nchan, []),  sigShift, rez.yc, rez.xc, iCovChans, sigDrift, rez.Wrot);
+    Uup   = shift_data(reshape(U, ops.Nchan, []),  sigShift, rez.yc, rez.xc, rez.zc, iCovChans, sigDrift, rez.Wrot);
     Uup   = reshape(Uup, size(U));
-    Udown = shift_data(reshape(U, ops.Nchan, []), -sigShift, rez.yc, rez.xc, iCovChans, sigDrift, rez.Wrot);
+    Udown = shift_data(reshape(U, ops.Nchan, []), -sigShift, rez.yc, rez.xc, rez.zc, iCovChans, sigDrift, rez.Wrot);
     Udown = reshape(Udown, size(U));
         
     mu = repmat(mu, 3, 1);
@@ -66,7 +68,7 @@ for i = 1:10
         clips = reshape(clips, ops.Nchan, []);
         
         % resample clips by the delta y
-        clips = shift_data(clips, deltay(:, ibatch), rez.yc, rez.xc, iCovChans, sigDrift, rez.Wrot);        
+        clips = shift_data(clips, deltay(:, ibatch), rez.yc, rez.xc, rez.zc, iCovChans, sigDrift, rez.Wrot);
         clips = reshape(clips, size(U,1), [])';
         
         ci = clips * [Udown U Uup];
