@@ -1273,6 +1273,28 @@ def test_preprocess_config_preserves_sorter_partition_mode(tmp_path: Path) -> No
     assert loaded.preprocess.sorter_partition_mode == "shank"
 
 
+def test_highamp_dead_time_round_trips_from_gui_to_config(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        window.highamp_dead_time.setValue(12.5)
+        settings = window._collect_settings()
+        settings.basepath = str(tmp_path / "session")
+        settings.local_root = str(tmp_path / "local")
+        loaded = PipelineGuiSettings.from_json(settings.to_json())
+        window._apply_settings(loaded)
+
+        assert loaded.preprocess.highamp_dead_time_ms == 12.5
+        assert window.highamp_dead_time.value() == 12.5
+        assert loaded.to_preprocess_config().highamp_dead_time_ms == 12.5
+    finally:
+        window.close()
+        application.processEvents()
+
+
 def test_execution_resources_round_trip_exact_slurm_cpu_count_without_local_cap(
     tmp_path: Path,
 ) -> None:

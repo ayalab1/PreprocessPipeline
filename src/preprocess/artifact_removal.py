@@ -5,6 +5,8 @@ from joblib import Parallel, delayed, effective_n_jobs
 import matplotlib.pyplot as plt
 import spikeinterface.widgets as sw
 
+from .interval_artifacts import RemoveArtifactIntervalsRecording
+
 try:
     from tqdm.auto import tqdm as _tqdm
 except Exception:  # pragma: no cover - optional dependency fallback
@@ -334,11 +336,12 @@ def detect_high_amplitude_artifacts(
 
 def remove_artifacts(
     recording_in: si.BaseRecording,
-    artifact_per_group: dict[int, list[int]] or list[int],
+    artifact_per_group: dict[int, list[int] | np.ndarray] | list[int],
     by_group: bool = True,         # If False, treat all channels as a single group
     ms_before: float = 0.5,        # Window start relative to trigger (ms; positive values look back in time)
     ms_after: float = 3.0,         # Window end relative to trigger (ms; positive values look forward in time)
     mode: str = "cubic",           # Interpolation strategy: 'cubic' | 'linear' | 'mean' (SI >= 0.98)
+    use_intervals: bool = False,   # Treat each group's values as merged [start, stop) sample intervals
 ):
     """
     Apply `spre.remove_artifacts` independently per group (or globally), then stitch channels back together.
@@ -347,8 +350,8 @@ def remove_artifacts(
     ----------
     recording_in : si.BaseRecording
         Single-segment input recording extractor.
-    artifact_per_group : dict[int, list[int]]
-        Mapping group_id -> list of trigger frames (global timeline) to remove.
+    artifact_per_group : dict[int, list[int] | ndarray]
+        Mapping group_id to trigger frames, or to merged sample intervals when use_intervals=True.
     by_group : bool, default True
         If True, apply removal independently for each group.
         If False, apply removal to all channels simultaneously using triggers from key 0.
@@ -358,6 +361,8 @@ def remove_artifacts(
         Duration (ms) after trigger to remove.
     mode : str, default 'cubic'
         SI strategy for trace interpolation ('cubic', 'linear', or 'mean').
+    use_intervals : bool, default False
+        Interpolate each complete merged interval using clean samples outside its boundaries.
 
     Returns
     -------
@@ -407,28 +412,36 @@ def remove_artifacts(
             trig = artifact_per_group
         else:
             trig = artifact_per_group.get(int(gid), [])
-        if trig:
-            trig = np.unique(np.asarray(trig, dtype=np.int64)).tolist()
-
-        if trig:
-            # Apply artifact removal on this group only
-            sub_clean = spre.remove_artifacts(
-                sub_rec,
-                list_triggers=trig,     # frames on the full recording timeline
-                ms_before=ms_before,
-                ms_after=ms_after,
-                mode=mode,
+        if use_intervals:
+            intervals = np.asarray(trig, dtype=np.int64).reshape(-1, 2)
+            n_events = len(intervals)
+            sub_clean = (
+                RemoveArtifactIntervalsRecording(sub_rec, intervals, mode=mode)
+                if n_events else sub_rec
             )
+        else:
+            trig = np.unique(np.asarray(trig, dtype=np.int64)).tolist()
+            n_events = len(trig)
+            sub_clean = (
+                spre.remove_artifacts(
+                    sub_rec,
+                    list_triggers=trig,
+                    ms_before=ms_before,
+                    ms_after=ms_after,
+                    mode=mode,
+                )
+                if n_events else sub_rec
+            )
+
+        if n_events:
             details[int(gid)] = {
-                "n_triggers": len(trig),
+                "n_triggers": n_events,
                 "ms_before": ms_before,
                 "ms_after": ms_after,
                 "mode": mode,
                 "channel_ids": gr_ch_ids.tolist(),
             }
         else:
-            # No triggers -> passthrough
-            sub_clean = sub_rec
             details[int(gid)] = {
                 "n_triggers": 0,
                 "ms_before": ms_before,

@@ -3249,16 +3249,26 @@ class MainWindow(QMainWindow):
         self.highamp_group = NoWheelComboBox()
         self.highamp_group.addItems(["all", "probe", "shank"])
         self.highamp_sigma = self._double_spin(0.1, 1000.0, 5.0)
+        self.highamp_dead_time = self._double_spin(0.0, 1000.0, 1.0)
         self.highamp_before = self._double_spin(0.0, 1000.0, 2.0)
         self.highamp_after = self._double_spin(0.0, 1000.0, 2.0)
         self.highamp_mode = NoWheelComboBox()
         self.highamp_mode.addItems(["linear", "cubic", "0"])
+        self.highamp_merge_intervals = QCheckBox("Merge overlapping high-amplitude artifact windows")
         high_form.addRow(self.remove_highamp_artifacts)
         high_form.addRow("High amp group mode", self.highamp_group)
         high_form.addRow("High amp sigma", self.highamp_sigma)
+        high_form.addRow("High amp dead time ms", self.highamp_dead_time)
         high_form.addRow("High amp ms before", self.highamp_before)
         high_form.addRow("High amp ms after", self.highamp_after)
         high_form.addRow("High amp interpolation mode", self.highamp_mode)
+        high_form.addRow(self.highamp_merge_intervals)
+        high_form.addRow(
+            self._hint_label(
+                "After detection, combine overlapping removal windows into full intervals "
+                "and interpolate across each interval. Dead time still controls trigger spacing."
+            )
+        )
 
         sorter = QGroupBox("Sorter")
         sf = self._form_layout(sorter)
@@ -3335,9 +3345,11 @@ class MainWindow(QMainWindow):
             self.remove_highamp_artifacts,
             self.highamp_group,
             self.highamp_sigma,
+            self.highamp_dead_time,
             self.highamp_before,
             self.highamp_after,
             self.highamp_mode,
+            self.highamp_merge_intervals,
             self.run_sorter,
             self.sorter,
             self.sorter_path,
@@ -6254,9 +6266,11 @@ class MainWindow(QMainWindow):
             remove_highamp_artifacts=self.remove_highamp_artifacts.isChecked(),
             artifact_highamp_group_mode=self.highamp_group.currentText(),
             highamp_threshold_sigma=self.highamp_sigma.value(),
+            highamp_dead_time_ms=self.highamp_dead_time.value(),
             highamp_ms_before=self.highamp_before.value(),
             highamp_ms_after=self.highamp_after.value(),
             highamp_mode=self.highamp_mode.currentText(),
+            highamp_merge_intervals=self.highamp_merge_intervals.isChecked(),
             reject_channels=sorted(self._manual_reject_channels),
             probe_assignments=[] if self._probe_assignments_automatic else self._probe_rows_to_assignments(),
             run_sorter=self.run_sorter.isChecked(),
@@ -6423,9 +6437,11 @@ class MainWindow(QMainWindow):
                 "shank" if p.artifact_highamp_group_mode == "none" else p.artifact_highamp_group_mode
             )
             self.highamp_sigma.setValue(p.highamp_threshold_sigma)
+            self.highamp_dead_time.setValue(p.highamp_dead_time_ms)
             self.highamp_before.setValue(p.highamp_ms_before)
             self.highamp_after.setValue(p.highamp_ms_after)
             self.highamp_mode.setCurrentText(p.highamp_mode)
+            self.highamp_merge_intervals.setChecked(p.highamp_merge_intervals)
             self.reject_channels.setText(", ".join(str(v) for v in p.reject_channels))
             self._manual_reject_channels = set(p.reject_channels)
             self._xml_skipped_channels = set()
