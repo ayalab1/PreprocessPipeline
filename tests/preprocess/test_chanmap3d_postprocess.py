@@ -94,6 +94,32 @@ def test_radius_sparsity_uses_physical_3d_distance(tmp_path: Path, xcoords: list
     np.testing.assert_array_equal(sparsity.mask, [[True, True, False]])
 
 
+def test_best_channels_sparsity_with_shared_xy_contacts(tmp_path: Path) -> None:
+    path = tmp_path / "chanMap3d.mat"
+    savemat(path, {
+        "chanMap0ind": [0, 1, 2], "chanMap": [1, 2, 3],
+        "xcoords": [0, 0, 100], "ycoords": [0, 0, 0],
+        "zcoords": [0, 25, 0], "kcoords": [1, 1, 1],
+    })
+    traces = np.random.default_rng(2).normal(0, 0.1, (4000, 3)).astype(np.float32)
+    spikes = np.array([400, 900, 1400, 1900, 2400, 2900, 3400])
+    traces[spikes, 0] -= 20
+    traces[spikes, 1] -= 12
+    traces[spikes, 2] += 30  # The default peak_sign="neg" excludes this larger positive peak.
+    recording = attach_probe_from_chanmap(NumpyRecording(traces, 20000.0), path)
+    sorting = NumpySorting.from_unit_dict({1: spikes}, 20000.0)
+    config = SimpleNamespace(
+        analyzer_sparse=True, sparsity_method="best_channels", sparsity_num_channels=2,
+        job_kwargs={"n_jobs": 1, "progress_bar": False},
+    )
+
+    sparsity = _physical_3d_sparsity(config, sorting, recording)
+    np.testing.assert_array_equal(sparsity.mask, [[True, True, False]])
+    analyzer = si.create_sorting_analyzer(sorting, recording, format="memory", sparsity=sparsity)
+    np.testing.assert_array_equal(analyzer.sparsity.mask, [[True, True, False]])
+    np.testing.assert_array_equal(recording.get_channel_locations(axes="xyz"), [[0, 0, 0], [0, 0, 25], [100, 0, 0]])
+
+
 def test_zero_depth_keeps_existing_2d_layout(tmp_path: Path) -> None:
     path = tmp_path / "chanMap2d.mat"
     savemat(path, {

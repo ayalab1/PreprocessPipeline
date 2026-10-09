@@ -758,12 +758,12 @@ def _sorting_analyzer_sparsity_kwargs(config: PostprocessConfig) -> dict[str, An
 
 
 def _physical_3d_sparsity(config: PostprocessConfig, sorting, recording):
-    """Build geometry-based sparsity with physical distances for 3-D maps.
+    """Build sparsity without projecting 3-D maps onto a 2-D dummy probe.
 
-    SpikeInterface 0.103.2's analyzer omits z when it estimates radius and
-    closest-channel sparsity, even when its probe has three dimensions.
+    SpikeInterface 0.103.2's estimator can omit z for geometry methods and
+    rejects contacts with the same x/y position for all three methods.
     """
-    if not config.analyzer_sparse or config.sparsity_method not in {"radius", "closest_channels"}:
+    if not config.analyzer_sparse or config.sparsity_method not in {"radius", "closest_channels", "best_channels"}:
         return None
     locations = analysis_channel_locations(recording)
     if locations.shape[1] != 3:
@@ -789,7 +789,16 @@ def _physical_3d_sparsity(config: PostprocessConfig, sorting, recording):
         job_name="estimate_3d_sparsity",
         **config.job_kwargs,
     )
-    best_indices = np.argmax(np.abs(np.min(templates, axis=1)), axis=1)
+    # Match SpikeInterface's default best_channels ranking: the largest
+    # absolute negative template extremum on each channel.
+    amplitudes = np.abs(np.min(templates, axis=1))
+    if config.sparsity_method == "best_channels":
+        mask = np.zeros(amplitudes.shape, dtype=bool)
+        ranked = np.argsort(amplitudes, axis=1)[:, ::-1]
+        np.put_along_axis(mask, ranked[:, :int(config.sparsity_num_channels)], True, axis=1)
+        return si.ChannelSparsity(mask, sorting.unit_ids, recording.channel_ids)
+
+    best_indices = np.argmax(amplitudes, axis=1)
     distances = np.linalg.norm(locations[best_indices, None, :] - locations[None, :, :], axis=2)
     if config.sparsity_method == "radius":
         mask = distances <= float(config.sparsity_radius_um)
