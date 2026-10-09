@@ -305,6 +305,7 @@ class PreprocessGuiSettings:
     highamp_ms_before: float = 2.0
     highamp_ms_after: float = 2.0
     highamp_mode: str = "linear"
+    highamp_merge_intervals: bool = False
     reject_channels: list[int] = field(default_factory=list)
     # Empty means derive geometry and all groups from the selected XML.
     probe_assignments: list[dict[str, Any]] = field(default_factory=list)
@@ -648,6 +649,7 @@ class PipelineGuiSettings:
             highamp_ms_before=p.highamp_ms_before,
             highamp_ms_after=p.highamp_ms_after,
             highamp_mode=p.highamp_mode,
+            highamp_merge_intervals=p.highamp_merge_intervals,
             highamp_n_jobs=normalize_worker_count(p.preprocess_worker_count),
             make_lfp=p.make_lfp,
             lfp_fs=p.lfp_fs,
