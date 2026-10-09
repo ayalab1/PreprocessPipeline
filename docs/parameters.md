@@ -174,7 +174,8 @@ XML/Phy rate or channel-count metadata is rejected.
 | `dat_path` | `""` | Explicit recording binary matching the sorting. Empty uses Phy/session path resolution. |
 | `apply_preprocess` | `false` | Apply the preprocessing filter/reference settings to a raw postprocess recording. Leave false for an already processed recording. |
 | `exclude_cluster_groups` | `["noise"]` | Phy labels to exclude. Add `mua` if those clusters should also be excluded. |
-| `duplicate_censored_period_ms` | `0.5` | Coincidence window used to identify duplicate spike trains, ms. |
+| `duplicate_censored_period_ms` | `0.5` | First stage: remove nearby spikes already assigned to the same unit, before unit merging. At `0`, only exact same-sample duplicates within a unit are removed. |
+| `merge_censor_ms` | `0.5` | Later stage: if units are merged, remove nearby spikes from the combined spike train. At `0`, this merge stage removes no spikes, including exact same-sample spikes from different units. |
 | `duplicate_threshold` | `0.5` | Duplicate-overlap threshold used by duplicate-unit removal. |
 | `merge_min_spikes` | `100` | Minimum spike count for automatic merge candidates. |
 | `merge_corr_diff_thresh` | `0.25` | Correlogram-difference threshold for merging. |
@@ -189,6 +190,14 @@ XML/Phy rate or channel-count metadata is rejected.
 | `noise_thresholds` | See below | Rules for assigning the Phy `noise` label. |
 | `overwrite` | `false` | Permit replacing postprocess outputs when true. |
 | `worker_count` | Automatic | Direct postprocess workers; persistent Runs use postprocess Stage `cpus`. |
+
+The two censor windows act in sequence. For example, two spikes 0.3 ms apart
+already in unit A can be reduced to one by `duplicate_censored_period_ms=0.5`.
+If one spike is in unit A and the other in unit B, that first stage keeps both;
+`merge_censor_ms=0.5` can remove one only if A and B are subsequently merged.
+To retain spikes at distinct sample times even when their ISI is short, set
+**both** values to `0`. Changing the merge window cannot restore a spike
+removed by the earlier within-unit stage.
 | `cell_explorer_sorting_folders` | `[]` | GUI selection for launching CellExplorer on particular sorting folders. The ephys CLI does not launch CellExplorer. |
 
 The current GUI also lists `chi2` and `quantile` for split threshold mode, but

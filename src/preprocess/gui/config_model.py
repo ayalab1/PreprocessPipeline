@@ -330,6 +330,7 @@ class PostprocessGuiSettings:
     apply_preprocess: bool = False
     exclude_cluster_groups: list[str] = field(default_factory=lambda: ["noise"])
     duplicate_censored_period_ms: float = 0.5
+    merge_censor_ms: float = 0.5
     duplicate_threshold: float = 0.5
     merge_min_spikes: int = 100
     merge_corr_diff_thresh: float = 0.25
@@ -738,6 +739,7 @@ class PipelineGuiSettings:
             local_radius_um=self.preprocess.local_radius_um,
             exclude_cluster_groups=list(pp.exclude_cluster_groups),
             duplicate_censored_period_ms=pp.duplicate_censored_period_ms,
+            merge_censor_ms=pp.merge_censor_ms,
             duplicate_threshold=pp.duplicate_threshold,
             merge_min_spikes=pp.merge_min_spikes,
             merge_corr_diff_thresh=pp.merge_corr_diff_thresh,
