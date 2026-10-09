@@ -1273,7 +1273,7 @@ def test_preprocess_config_preserves_sorter_partition_mode(tmp_path: Path) -> No
     assert loaded.preprocess.sorter_partition_mode == "shank"
 
 
-def test_merge_censor_round_trips_from_gui_to_config(tmp_path: Path, monkeypatch) -> None:
+def test_merge_censor_and_high_amp_deadtime_round_trips_from_gui_to_config(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
 
@@ -1281,6 +1281,7 @@ def test_merge_censor_round_trips_from_gui_to_config(tmp_path: Path, monkeypatch
     window = MainWindow()
     try:
         window.merge_censor.setValue(0.0)
+        window.highamp_dead_time.setValue(12.5)
         settings = window._collect_settings()
         settings.basepath = str(tmp_path / "session")
         settings.local_root = str(tmp_path / "local")
@@ -1290,6 +1291,9 @@ def test_merge_censor_round_trips_from_gui_to_config(tmp_path: Path, monkeypatch
         assert loaded.postprocess.merge_censor_ms == 0.0
         assert window.merge_censor.value() == 0.0
         assert loaded.to_postprocess_config().merge_censor_ms == 0.0
+        assert loaded.preprocess.highamp_dead_time_ms == 12.5
+        assert window.highamp_dead_time.value() == 12.5
+        assert loaded.to_preprocess_config().highamp_dead_time_ms == 12.5
     finally:
         window.close()
         application.processEvents()
