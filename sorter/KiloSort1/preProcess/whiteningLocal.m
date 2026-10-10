@@ -7,6 +7,10 @@ function Wrot = whiteningLocal(CC, yc, xc, zc, nRange)
 %   meaningful z-component (e.g. double-sided shanks) correctly prefer
 %   geometrically close neighbours.  For 2-D probes pass zc = zeros(N,1).
 
+yc = yc(:);
+xc = xc(:);
+zc = zc(:);
+
 Wrot = zeros(size(CC,1), size(CC,1));
 for j = 1:size(CC,1)
     ds          = (xc - xc(j)).^2 + (yc - yc(j)).^2 + (zc - zc(j)).^2;

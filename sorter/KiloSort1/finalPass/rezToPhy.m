@@ -162,8 +162,8 @@ if ~isempty(savePath)
             elseif ~isnan(prevHalfDist)
                 halfDist = prevHalfDist;  % last shank: reuse previous spacing
             else
-                halfDist = 0;
                 warning('rezToPhy: last shank is double-sided but no previous inter-shank distance available; x-offset skipped.');
+                continue;  % keep the baseline x + z projection for this shank
             end
 
             firstSide  = sc(find(shMask, 1));
