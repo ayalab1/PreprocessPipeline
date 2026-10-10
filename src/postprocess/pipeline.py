@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import errno
 import gc
 import hashlib
 import json
@@ -461,12 +462,14 @@ def _mark_low_firing_rate_clusters_as_noise(
 
 
 def _safe_rmtree(path: Path, *, retries: int = 3, delay: float = 1.0) -> None:
-    """shutil.rmtree with retry for Windows memory-mapped file locks."""
+    """Retry removal while files or worker processes are releasing a folder."""
     for attempt in range(retries):
         try:
             shutil.rmtree(path)
             return
-        except PermissionError:
+        except OSError as exc:
+            if not isinstance(exc, PermissionError) and exc.errno != errno.ENOTEMPTY:
+                raise
             if attempt < retries - 1:
                 gc.collect()
                 time.sleep(delay)
@@ -1653,7 +1656,13 @@ def _run_postprocess_single_session(
     except Exception:
         staging_folder = attempt_state.get("staging_folder")
         if staging_folder is not None and staging_folder.exists():
-            _safe_rmtree(staging_folder)
+            try:
+                _safe_rmtree(staging_folder)
+            except OSError as cleanup_error:
+                warnings.warn(
+                    f"Could not remove failed postprocess attempt {staging_folder}: {cleanup_error}",
+                    RuntimeWarning,
+                )
         raise
 
 
