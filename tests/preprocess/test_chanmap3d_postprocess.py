@@ -14,7 +14,14 @@ from src.preprocess.recording import (
     analysis_channel_locations,
     attach_probe_from_chanmap,
 )
-from src.postprocess.pipeline import _physical_3d_sparsity, _phy_display_positions
+from src.postprocess.pipeline import (
+    _AnalyzerWithProjectedUnitLocations,
+    _compute_final_features,
+    _compute_merge_groups,
+    _physical_3d_sparsity,
+    _physical_3d_unit_locations,
+    _phy_display_positions,
+)
 
 
 def _write_3d_map(path: Path, zcoords: list[float]) -> None:
@@ -118,6 +125,63 @@ def test_best_channels_sparsity_with_shared_xy_contacts(tmp_path: Path) -> None:
     analyzer = si.create_sorting_analyzer(sorting, recording, format="memory", sparsity=sparsity)
     np.testing.assert_array_equal(analyzer.sparsity.mask, [[True, True, False]])
     np.testing.assert_array_equal(recording.get_channel_locations(axes="xyz"), [[0, 0, 0], [0, 0, 25], [100, 0, 0]])
+
+
+def test_merge_candidates_use_3d_distance_with_shared_xy_contacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.postprocess.pipeline as post_pipeline
+
+    path = tmp_path / "chanMap3d.mat"
+    _write_3d_map(path, [0, 250, 50])
+    traces = np.random.default_rng(3).normal(0, 0.01, (4000, 3)).astype(np.float32)
+    spikes = [np.array([400, 900, 1400]), np.array([500, 1000, 1500]), np.array([600, 1100, 1600])]
+    for channel, times in enumerate(spikes):
+        traces[times, channel] -= 20
+    recording = attach_probe_from_chanmap(NumpyRecording(traces, 20000.0), path)
+    sorting = NumpySorting.from_unit_dict({1: spikes[0], 2: spikes[1], 3: spikes[2]}, 20000.0)
+    analyzer = si.create_sorting_analyzer(sorting, recording, format="memory", sparse=False)
+    analyzer.compute("random_spikes", method="all")
+    analyzer.compute("waveforms", n_jobs=1)
+    analyzer.compute("templates")
+
+    locations = _physical_3d_unit_locations(analyzer, recording)
+    projected = _AnalyzerWithProjectedUnitLocations(analyzer, locations)
+    xy_pairs = post_pipeline.scur.compute_merge_unit_groups(
+        projected, steps=["unit_locations"], resolve_graph=False, force_copy=False,
+    )
+    assert {tuple(pair) for pair in xy_pairs} == {(1, 2), (1, 3), (2, 3)}
+    post_pipeline.scur.compute_merge_unit_groups(
+        projected, preset="similarity_correlograms", resolve_graph=False,
+        steps_params={"num_spikes": {"min_spikes": 1}}, force_copy=False,
+        n_jobs=1, progress_bar=False,
+    )
+
+    def all_candidate_pairs(analyzer_arg, **kwargs):
+        assert isinstance(analyzer_arg, _AnalyzerWithProjectedUnitLocations)
+        assert kwargs["resolve_graph"] is False
+        return [(1, 2), (1, 3), (2, 3)]
+
+    monkeypatch.setattr(post_pipeline.scur, "compute_merge_unit_groups", all_candidate_pairs)
+    config = SimpleNamespace(
+        merge_min_spikes=1, merge_corr_diff_thresh=0.25,
+        merge_template_diff_thresh=0.25, job_kwargs={},
+    )
+    assert _compute_merge_groups(config, analyzer, recording) == [[1, 3]]
+
+
+def test_final_3d_features_avoid_unsupported_localization() -> None:
+    computed = []
+    analyzer = SimpleNamespace(compute=lambda features, **kwargs: computed.append(features))
+
+    _compute_final_features(
+        analyzer, n_components=3, pc_mode="by_channel_global",
+        job_kwargs={}, include_locations=False,
+    )
+
+    assert "spike_locations" not in computed[0]
+    assert "unit_locations" not in computed[0]
+    assert {"templates", "spike_amplitudes", "principal_components"} <= computed[0].keys()
 
 
 def test_zero_depth_keeps_existing_2d_layout(tmp_path: Path) -> None:
