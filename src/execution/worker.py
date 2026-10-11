@@ -39,6 +39,15 @@ def _limit_thread_oversubscription() -> None:
         os.environ[name] = "1"
 
 
+def _configure_headless_plotting() -> None:
+    # Stage workers save figures to files, including when launched from a Qt GUI.
+    # Override an inherited interactive backend before any stage imports pyplot.
+    os.environ["MPLBACKEND"] = "Agg"
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+
+
 def _settings_for_run(store: RunStore):
     from src.preprocess.gui.config_model import PipelineGuiSettings
 
@@ -434,6 +443,7 @@ def run_stage(store: RunStore, spec: AttemptSpec) -> dict[str, Any]:
 
 def execute(run_dir: Path, stage: StageName, attempt: int) -> int:
     _limit_thread_oversubscription()
+    _configure_headless_plotting()
     store = RunStore(run_dir)
     spec = store.load_attempt_spec(stage, attempt)
     analysis = store.load_analysis()
