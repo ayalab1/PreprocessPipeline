@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import errno
 import gc
 import hashlib
 import json
@@ -19,6 +20,9 @@ import spikeinterface as si
 import spikeinterface.curation as scur
 import spikeinterface.extractors as se
 import spikeinterface.qualitymetrics as sqm
+from spikeinterface.core import estimate_templates_with_accumulator, random_spikes_selection
+from spikeinterface.core.template_tools import get_dense_templates_array
+from spikeinterface.curation.curation_tools import resolve_merging_graph
 from spikeinterface.exporters import export_to_phy
 
 from .unit_classify import mark_noise_clusters_from_metrics
@@ -26,6 +30,7 @@ from .unit_split import autosplit_outliers_pca
 
 from ..preprocess.metafile import PreprocessConfig, PreprocessResult
 from ..preprocess.recording import (
+    analysis_channel_locations,
     apply_preprocessing,
     attach_probe_and_remove_bad_channels,
     preprocess_selected_channels_preserve_shape,
@@ -457,12 +462,14 @@ def _mark_low_firing_rate_clusters_as_noise(
 
 
 def _safe_rmtree(path: Path, *, retries: int = 3, delay: float = 1.0) -> None:
-    """shutil.rmtree with retry for Windows memory-mapped file locks."""
+    """Retry removal while files or worker processes are releasing a folder."""
     for attempt in range(retries):
         try:
             shutil.rmtree(path)
             return
-        except PermissionError:
+        except OSError as exc:
+            if not isinstance(exc, PermissionError) and exc.errno != errno.ENOTEMPTY:
+                raise
             if attempt < retries - 1:
                 gc.collect()
                 time.sleep(delay)
@@ -682,25 +689,24 @@ def _compute_merge_split_features(
 
 
 def _compute_final_features(
-    analyzer, *, n_components: int, pc_mode: str, job_kwargs: dict
+    analyzer, *, n_components: int, pc_mode: str, job_kwargs: dict,
+    include_locations: bool = True,
 ) -> None:
-    """Compute all features for quality metrics and Phy export."""
-    analyzer.compute(
-        {
-            "random_spikes": {"method": "all"},
-            "waveforms": {},
-            "templates": {},
-            "noise_levels": {},
-            "spike_amplitudes": {},
-            "principal_components": {"n_components": n_components, "mode": pc_mode},
-            "template_metrics": {},
-            "template_similarity": {},
-            "correlograms": {},
-            "spike_locations": {},
-            "unit_locations": {},
-        },
-        **job_kwargs,
-    )
+    """Compute features for quality metrics and Phy export."""
+    features = {
+        "random_spikes": {"method": "all"},
+        "waveforms": {},
+        "templates": {},
+        "noise_levels": {},
+        "spike_amplitudes": {},
+        "principal_components": {"n_components": n_components, "mode": pc_mode},
+        "template_metrics": {},
+        "template_similarity": {},
+        "correlograms": {},
+    }
+    if include_locations:
+        features.update({"spike_locations": {}, "unit_locations": {}})
+    analyzer.compute(features, **job_kwargs)
 
 
 def _merge_template_metrics_into_metrics_df(
@@ -753,6 +759,138 @@ def _sorting_analyzer_sparsity_kwargs(config: PostprocessConfig) -> dict[str, An
     elif config.sparsity_method in {"best_channels", "closest_channels"}:
         kwargs["num_channels"] = int(config.sparsity_num_channels)
     return kwargs
+
+
+def _physical_3d_sparsity(config: PostprocessConfig, sorting, recording):
+    """Build sparsity without projecting 3-D maps onto a 2-D dummy probe.
+
+    SpikeInterface 0.103.2's estimator can omit z for geometry methods and
+    rejects contacts with the same x/y position for all three methods.
+    """
+    if not config.analyzer_sparse or config.sparsity_method not in {"radius", "closest_channels", "best_channels"}:
+        return None
+    locations = analysis_channel_locations(recording)
+    if locations.shape[1] != 3:
+        return None
+
+    # The built-in estimator reconstructs a 2-D dummy probe in SI 0.103.2;
+    # coincident x,y contacts on opposite faces then fail its uniqueness check.
+    sampling_frequency = recording.get_sampling_frequency()
+    nbefore = int(1.0 * sampling_frequency / 1000.0)
+    nafter = int(2.5 * sampling_frequency / 1000.0)
+    num_samples = [recording.get_num_samples(segment_index) for segment_index in range(recording.get_num_segments())]
+    selected_spike_indices = random_spikes_selection(
+        sorting, num_samples, method="uniform", max_spikes_per_unit=100,
+        margin_size=max(nbefore, nafter), seed=2205,
+    )
+    templates = estimate_templates_with_accumulator(
+        recording,
+        sorting.to_spike_vector()[selected_spike_indices],
+        sorting.unit_ids,
+        nbefore,
+        nafter,
+        return_in_uV=False,
+        job_name="estimate_3d_sparsity",
+        **config.job_kwargs,
+    )
+    # Match SpikeInterface's default best_channels ranking: the largest
+    # absolute negative template extremum on each channel.
+    amplitudes = np.abs(np.min(templates, axis=1))
+    if config.sparsity_method == "best_channels":
+        mask = np.zeros(amplitudes.shape, dtype=bool)
+        ranked = np.argsort(amplitudes, axis=1)[:, ::-1]
+        np.put_along_axis(mask, ranked[:, :int(config.sparsity_num_channels)], True, axis=1)
+        return si.ChannelSparsity(mask, sorting.unit_ids, recording.channel_ids)
+
+    best_indices = np.argmax(amplitudes, axis=1)
+    distances = np.linalg.norm(locations[best_indices, None, :] - locations[None, :, :], axis=2)
+    if config.sparsity_method == "radius":
+        mask = distances <= float(config.sparsity_radius_um)
+    else:
+        mask = np.zeros_like(distances, dtype=bool)
+        nearest = np.argsort(distances, axis=1)[:, :int(config.sparsity_num_channels)]
+        np.put_along_axis(mask, nearest, True, axis=1)
+    return si.ChannelSparsity(mask, sorting.unit_ids, recording.channel_ids)
+
+
+def _physical_3d_unit_locations(analyzer, recording) -> np.ndarray:
+    """Estimate unit centers from template amplitudes and physical contacts."""
+    locations = analysis_channel_locations(recording)
+    templates = get_dense_templates_array(analyzer, return_in_uV=analyzer.return_in_uV)
+    weights = np.ptp(templates, axis=1)
+    peak_channels = np.argmax(np.abs(np.min(templates, axis=1)), axis=1)
+    unit_locations = np.empty((len(analyzer.unit_ids), 3), dtype=float)
+    for index, unit_id in enumerate(analyzer.unit_ids):
+        if analyzer.sparsity is not None:
+            channel_indices = analyzer.sparsity.unit_id_to_channel_indices[unit_id]
+        else:
+            distances = np.linalg.norm(locations - locations[peak_channels[index]], axis=1)
+            channel_indices = np.flatnonzero(distances <= 75.0)
+        amplitudes = weights[index, channel_indices]
+        if amplitudes.sum() > 0:
+            unit_locations[index] = np.average(locations[channel_indices], axis=0, weights=amplitudes)
+        else:
+            unit_locations[index] = locations[peak_channels[index]]
+    return unit_locations
+
+
+class _ProjectedUnitLocations:
+    def __init__(self, locations: np.ndarray):
+        self.locations = locations[:, :2]
+
+    def get_data(self):
+        return self.locations
+
+
+class _AnalyzerWithProjectedUnitLocations:
+    """Supply SI's 2-D merge prefilter without changing the real analyzer."""
+    def __init__(self, analyzer, locations: np.ndarray):
+        self.analyzer = analyzer
+        self.unit_locations = _ProjectedUnitLocations(locations)
+
+    def has_extension(self, name: str) -> bool:
+        return name == "unit_locations" or self.analyzer.has_extension(name)
+
+    def get_extension(self, name: str):
+        if name == "unit_locations":
+            return self.unit_locations
+        return self.analyzer.get_extension(name)
+
+    def __getattr__(self, name: str):
+        return getattr(self.analyzer, name)
+
+
+def _compute_merge_groups(config: PostprocessConfig, analyzer, recording):
+    steps_params = {
+        "num_spikes": {"min_spikes": config.merge_min_spikes},
+        "correlogram": {"corr_diff_thresh": config.merge_corr_diff_thresh},
+        "template_similarity": {"template_diff_thresh": config.merge_template_diff_thresh},
+    }
+    if analysis_channel_locations(recording).shape[1] != 3:
+        return scur.compute_merge_unit_groups(
+            analyzer, preset="similarity_correlograms", resolve_graph=True,
+            steps_params=steps_params, **config.job_kwargs,
+        )
+
+    locations = _physical_3d_unit_locations(analyzer, recording)
+    # xy distance is never greater than xyz distance, so this preserves every
+    # physically nearby pair in SI's inexpensive prefilter. Check z before
+    # resolving the graph to avoid connecting distant units through a group.
+    candidate_pairs = scur.compute_merge_unit_groups(
+        _AnalyzerWithProjectedUnitLocations(analyzer, locations),
+        preset="similarity_correlograms", resolve_graph=False,
+        steps_params={**steps_params, "unit_locations": {"max_distance_um": 150.0}},
+        force_copy=False, **config.job_kwargs,
+    )
+    nearby_pairs = [
+        (unit_id_a, unit_id_b)
+        for unit_id_a, unit_id_b in candidate_pairs
+        if np.linalg.norm(
+            locations[analyzer.sorting.id_to_index(unit_id_a)]
+            - locations[analyzer.sorting.id_to_index(unit_id_b)]
+        ) <= 150.0
+    ]
+    return resolve_merging_graph(analyzer.sorting, nearby_pairs)
 
 
 def _resolve_effective_chanmap_for_postprocess(
@@ -924,6 +1062,12 @@ def _fix_phy_channel_map_file(output_folder: Path) -> None:
     np.save(channel_map_file, np.asarray(channel_map_si, dtype="int32"))
 
 
+def _phy_display_positions(recording, channel_ids: list[int]) -> np.ndarray:
+    """Flatten 3-D contacts only for Phy's two-column display file."""
+    xyz = recording.get_channel_locations(channel_ids=channel_ids, axes="xyz")
+    return np.column_stack((xyz[:, 0] + xyz[:, 2], xyz[:, 1])).astype("float32")
+
+
 def _export_phy_to_output_folder(
     *,
     sorting_analyzer,
@@ -965,6 +1109,13 @@ def _export_phy_to_output_folder(
         verbose=True,
         **job_kwargs,
     )
+    physical = analysis_channel_locations(sorting_analyzer.recording)
+    if physical.shape[1] == 3:
+        # Phy accepts a flat channel map; keep this projection confined to its
+        # display file and leave the analyzer's physical geometry intact.
+        exported_ids = np.load(phy_export_tmp / "channel_map_si.npy").tolist()
+        positions_2d = _phy_display_positions(sorting_analyzer.recording, exported_ids)
+        np.save(phy_export_tmp / "channel_positions.npy", positions_2d)
     write_centered_native_templates(sorting_analyzer, phy_export_tmp, job_kwargs)
     contacts = sorting_analyzer.recording.get_property("contact_vector")
     if contacts is not None and {"shank_ids", "probe_index"}.issubset(contacts.dtype.names or ()):
@@ -1180,11 +1331,19 @@ def _run_postprocess_single_session_impl(
         return recording_for_post
 
     def _create_stage_analyzer(stage_name: str, sorting_obj):
+        stage_recording = _ensure_recording_for_post()
         analyzer_kwargs = {
             "sorting": sorting_obj,
-            "recording": _ensure_recording_for_post(),
+            "recording": stage_recording,
             **_sorting_analyzer_sparsity_kwargs(config),
         }
+        physical_sparsity = _physical_3d_sparsity(config, sorting_obj, stage_recording)
+        if physical_sparsity is not None:
+            analyzer_kwargs = {
+                "sorting": sorting_obj,
+                "recording": stage_recording,
+                "sparsity": physical_sparsity,
+            }
         if config.analyzer_format == "binary_folder":
             assert analyzer_cache_root is not None
             stage_folder = analyzer_cache_root / stage_name
@@ -1206,6 +1365,10 @@ def _run_postprocess_single_session_impl(
     low_rate_threshold_hz = float(config.noise_thresholds.get("firing_rate_lt", 0.01))
     # Validate before changing source cluster labels or loading a cached analyzer.
     recording = _ensure_recording_for_post()
+    if analysis_channel_locations(recording).shape[1] == 3 and "drift" in config.metric_names:
+        raise ValueError(
+            "The drift quality metric requires spike locations, which SpikeInterface 0.103.2 cannot compute for 3-D contacts"
+        )
     _log(
         "marking low firing-rate clusters as noise before Phy load "
         f"(threshold={low_rate_threshold_hz:g} Hz)"
@@ -1287,19 +1450,8 @@ def _run_postprocess_single_session_impl(
         )
 
         # -- Merge --
-        steps_params = {
-            "num_spikes": {"min_spikes": config.merge_min_spikes},
-            "correlogram": {"corr_diff_thresh": config.merge_corr_diff_thresh},
-            "template_similarity": {"template_diff_thresh": config.merge_template_diff_thresh},
-        }
         _log("computing merge candidates")
-        merge_groups = scur.compute_merge_unit_groups(
-            analyzer,
-            preset="similarity_correlograms",
-            resolve_graph=True,
-            steps_params=steps_params,
-            **config.job_kwargs,
-        )
+        merge_groups = _compute_merge_groups(config, analyzer, recording)
         _log(f"merge candidates: {len(merge_groups)} groups")
         mergeable = analyzer.are_units_mergeable(
             merge_unit_groups=merge_groups,
@@ -1360,11 +1512,15 @@ def _run_postprocess_single_session_impl(
         gc.collect()
 
         analyzer_split = _create_stage_analyzer("split", sorting_split)
+        has_3d_contacts = analysis_channel_locations(recording).shape[1] == 3
+        if has_3d_contacts:
+            _log("skipping SpikeInterface 0.103.2 spike/unit localization for 3-D contacts")
         _compute_final_features(
             analyzer_split,
             n_components=config.n_components,
             pc_mode=config.pc_mode,
             job_kwargs=config.job_kwargs,
+            include_locations=not has_3d_contacts,
         )
         if config.analyzer_format == "binary_folder" and analyzer_cache_root is not None:
             identity_path = analyzer_cache_root / "split" / "pipeline_input_identity.json"
@@ -1500,7 +1656,13 @@ def _run_postprocess_single_session(
     except Exception:
         staging_folder = attempt_state.get("staging_folder")
         if staging_folder is not None and staging_folder.exists():
-            _safe_rmtree(staging_folder)
+            try:
+                _safe_rmtree(staging_folder)
+            except OSError as cleanup_error:
+                warnings.warn(
+                    f"Could not remove failed postprocess attempt {staging_folder}: {cleanup_error}",
+                    RuntimeWarning,
+                )
         raise
 
 

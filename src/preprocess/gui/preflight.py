@@ -144,12 +144,16 @@ def _local_cmr_check(settings: PipelineGuiSettings, *, apply_preprocess: bool | 
     try:
         x = np.asarray(data["xcoords"]).reshape(-1)
         y = np.asarray(data["ycoords"]).reshape(-1)
+        z = np.asarray(data["zcoords"]).reshape(-1) if "zcoords" in data else None
         connected = np.asarray(data["connected"], dtype=float).reshape(-1) > 0
         device_ch = np.asarray(
             data["chanMap0ind"] if "chanMap0ind" in data else np.asarray(data["chanMap"]) - 1
         ).reshape(-1).astype(int)
         n = x.size
-        if len({x.size, y.size, connected.size, device_ch.size}) != 1:
+        sizes = {x.size, y.size, connected.size, device_ch.size}
+        if z is not None:
+            sizes.add(z.size)
+        if len(sizes) != 1:
             raise ValueError("chanMap coordinates, connected mask and channel IDs must have equal lengths")
         rejected = set(p.reject_channels)
         rejected.update(settings.xml_excluded_channels(device_ch.tolist()))
@@ -161,11 +165,13 @@ def _local_cmr_check(settings: PipelineGuiSettings, *, apply_preprocess: bool | 
 
     x = x[:n][connected[:n]]
     y = y[:n][connected[:n]]
+    if z is not None:
+        z = z[:n][connected[:n]]
     channel_ids = device_ch[:n][connected[:n]].astype(int).tolist()
     if len(channel_ids) <= 1:
         return None
 
-    locations = np.column_stack((x, y))
+    locations = np.column_stack((x, y, z)) if z is not None and np.any(z != 0) else np.column_stack((x, y))
     isolated = _local_reference_channels_without_neighbors(
         channel_ids=channel_ids,
         locations=locations,

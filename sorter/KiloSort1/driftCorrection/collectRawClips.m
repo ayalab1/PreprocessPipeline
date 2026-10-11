@@ -10,16 +10,23 @@ if ~isempty(ops.chanMap)
             chanMapConn = chanMap(connected>1e-6);
             xc = xcoords(connected>1e-6);
             yc = ycoords(connected>1e-6);
+            if exist('zcoords', 'var')
+                zc = zcoords(connected>1e-6);
+            else
+                zc = zeros(numel(chanMapConn), 1);
+            end
         catch
             chanMapConn = 1+chanNums(connected>1e-6);
             xc = zeros(numel(chanMapConn), 1);
             yc = [1:1:numel(chanMapConn)]';
+            zc = zeros(numel(chanMapConn), 1);
         end
     else
         chanMap = ops.chanMap;
         chanMapConn = ops.chanMap;
         xc = zeros(numel(chanMapConn), 1);
         yc = [1:1:numel(chanMapConn)]';
+        zc = zeros(numel(chanMapConn), 1);
         connected = true(numel(chanMap), 1);        
     end
 else
@@ -29,6 +36,7 @@ else
     chanMapConn = 1:ops.Nchan;    
     xc = zeros(numel(chanMapConn), 1);
     yc = [1:1:numel(chanMapConn)]';
+    zc = zeros(numel(chanMapConn), 1);
 end
 if ~exist('kcoords', 'var')
     kcoords = ones(ops.Nchan, 1);
@@ -38,6 +46,7 @@ NT = ops.NT ;
 
 rez.xc = xc;
 rez.yc = yc;
+rez.zc = zc;
 rez.connected   = connected;
 rez.ops         = ops;
 rez.ops.chanMap = chanMap;
@@ -150,7 +159,7 @@ end
 
 if ops.whiteningRange<Inf
     ops.whiteningRange = min(ops.whiteningRange, Nchan);
-    Wrot = whiteningLocal(gather_try(CC), yc, xc, ops.whiteningRange);
+    Wrot = whiteningLocal(gather_try(CC), yc, xc, zc, ops.whiteningRange);
 else
     %
     [E, D] 	= svd(CC);

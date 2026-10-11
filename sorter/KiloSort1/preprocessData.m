@@ -1,6 +1,4 @@
 function [rez, DATA, uproj] = preprocessData(ops)
-%K% edited 3/11/21
-
 tic;
 uproj = [];
 ops.nt0 	= getOr(ops, {'nt0'}, 61);
@@ -17,10 +15,16 @@ if ~isempty(ops.chanMap)
             chanMapConn = chanMap(connected>1e-6);
             xc = xcoords(connected>1e-6);
             yc = ycoords(connected>1e-6);
+            if exist('zcoords', 'var')
+                zc = zcoords(connected>1e-6);
+            else
+                zc = zeros(numel(chanMapConn), 1);
+            end
         catch
             chanMapConn = 1+chanNums(connected>1e-6);
             xc = zeros(numel(chanMapConn), 1);
             yc = [1:1:numel(chanMapConn)]';
+            zc = zeros(numel(chanMapConn), 1);
         end
         ops.Nchan    = getOr(ops, 'Nchan', sum(connected>1e-6));
         ops.NchanTOT = getOr(ops, 'NchanTOT', numel(connected));
@@ -32,6 +36,7 @@ if ~isempty(ops.chanMap)
         chanMapConn = ops.chanMap;
         xc = zeros(numel(chanMapConn), 1);
         yc = [1:1:numel(chanMapConn)]';
+        zc = zeros(numel(chanMapConn), 1);
         connected = true(numel(chanMap), 1);      
         
         ops.Nchan    = numel(connected);
@@ -44,24 +49,36 @@ else
     chanMapConn = 1:ops.Nchan;    
     xc = zeros(numel(chanMapConn), 1);
     yc = [1:1:numel(chanMapConn)]';
+    zc = zeros(numel(chanMapConn), 1);
 end
 if exist('kcoords', 'var')
     kcoords = kcoords(connected>1e-6);
 else
     kcoords = ones(ops.Nchan, 1);
 end
+if exist('sidecoords', 'var')
+    rez.sidecoords = sidecoords(connected > 1e-6);
+end
+
 NchanTOT = ops.NchanTOT;
 NT       = ops.NT ;
 
 rez.ops         = ops;
 rez.xc = xc;
 rez.yc = yc;
-if exist('xcoords')
+rez.zc = zc;
+if exist('xcoords', 'var')
    rez.xcoords = xcoords;
    rez.ycoords = ycoords;
+   if exist('zcoords', 'var')
+       rez.zcoords = zcoords;
+   else
+       rez.zcoords = zeros(numel(xcoords), 1);
+   end
 else
    rez.xcoords = xc;
    rez.ycoords = yc;
+   rez.zcoords = zc;
 end
 rez.connected   = connected;
 rez.ops.chanMap = chanMap;
@@ -182,7 +199,7 @@ end
 
 if ops.whiteningRange<Inf
     ops.whiteningRange = min(ops.whiteningRange, Nchan);
-    Wrot = whiteningLocal(gather_try(CC), yc, xc, ops.whiteningRange);
+    Wrot = whiteningLocal(gather_try(CC), yc, xc, zc, ops.whiteningRange);
 else
     %
     [E, D] 	= svd(CC);

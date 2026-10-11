@@ -32,7 +32,7 @@ def load_channel_layout(path: Path, num_channels: int) -> dict:
         raise ValueError(f"{path}: channel IDs outside binary column range [0, {num_channels - 1}]")
     if "chanMap" in mat and not np.array_equal(np.asarray(mat["chanMap"]).reshape(-1) - 1, ids):
         raise ValueError(f"{path}: chanMap and chanMap0ind disagree")
-    for key in ("connected", "xcoords", "ycoords", "kcoords", "probe_ids"):
+    for key in ("connected", "xcoords", "ycoords", "zcoords", "kcoords", "probe_ids"):
         if key in mat and np.asarray(mat[key]).size != ids.size:
             raise ValueError(f"{path}: {key} length must match channel IDs")
     connected = np.asarray(mat.get("connected", np.ones(ids.size))).reshape(-1)
