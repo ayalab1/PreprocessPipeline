@@ -10,6 +10,11 @@ from .multiday import prepare_multi_day_basepath
 def prepare_preprocess_settings(settings: Any) -> dict[str, Any]:
     """Resolve runtime-only staging inputs without modifying the saved Run intent."""
     payload: dict[str, Any] = {}
+    source_chanmap = settings.resolved_chanmap_path()
+    if source_chanmap is not None and not source_chanmap.is_file():
+        if settings.chanmap_path.strip():
+            raise FileNotFoundError(f"Selected chanMap does not exist: {source_chanmap}")
+        source_chanmap = None
     if settings.multi_day_enabled:
         session_paths = [Path(path) for path in settings.multi_day_session_paths if str(path).strip()]
         if len(session_paths) < 2:
@@ -53,10 +58,8 @@ def prepare_preprocess_settings(settings: Any) -> dict[str, Any]:
         print(f"Selected subepochs CSV: {staged.selected_subepochs_csv_path}", flush=True)
     if settings.basepath_path is None:
         raise ValueError("basepath is required.")
-    # This runs inside the claimed persistent Stage worker. Rebuild the
-    # canonical chanMap from the immutable Run settings so a parameter-change
-    # rerun cannot silently consume a stale map, and the GUI never mutates
-    # session outputs before acquiring the session claim.
+    # Preserve the selected physical map. Template generation is used only
+    # when no existing map was selected before any multi-day path rewrite.
     basepath = settings.preprocess_source_path or settings.basepath_path
     basename = settings.basename
     local_output_dir = settings.local_output_dir
@@ -71,6 +74,7 @@ def prepare_preprocess_settings(settings: Any) -> dict[str, Any]:
         reject_channels=settings.preprocess.reject_channels,
         xml_path=xml_path,
         overwrite=settings.preprocess.overwrite,
+        source_chanmap_path=source_chanmap,
     )
     print(f"Prepared chanMap: {chanmap_path}", flush=True)
     print(f"Bad channels: {bad_channels}", flush=True)
