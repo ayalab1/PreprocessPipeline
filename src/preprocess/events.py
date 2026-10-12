@@ -598,7 +598,7 @@ def _save_analog_plot(
             return
         raise ValueError(f"Invalid existing analog plot with overwrite=False: {out_path}")
     try:
-        import matplotlib.pyplot as plt
+        from matplotlib.figure import Figure
     except Exception as exc:
         raise RuntimeError("Could not create analog pulse plot; no placeholder was published.") from exc
 
@@ -614,7 +614,8 @@ def _save_analog_plot(
     sampled = _decode_analog_counts(analog_data_u16[::step], sampled_epochs)
 
     n_show = min(max(1, len(channel_ids_1based)), 8)
-    fig, axes = plt.subplots(n_show, 1, figsize=(12, 2.2 * n_show), sharex=True)
+    fig = Figure(figsize=(12, 2.2 * n_show))
+    axes = fig.subplots(n_show, 1, sharex=True)
     if n_show == 1:
         axes = [axes]
     for i in range(n_show):
@@ -624,7 +625,6 @@ def _save_analog_plot(
     axes[-1].set_xlabel("s")
     fig.tight_layout()
     atomic_save_figure(out_path, fig, dpi=120)
-    plt.close(fig)
 
 
 def _save_digital_plot(output_dir: Path, digital_in: dict[str, Any], *, overwrite: bool) -> None:
@@ -636,12 +636,13 @@ def _save_digital_plot(output_dir: Path, digital_in: dict[str, Any], *, overwrit
             return
         raise ValueError(f"Invalid existing digital plot with overwrite=False: {out_path}")
     try:
-        import matplotlib.pyplot as plt
+        from matplotlib.figure import Figure
     except Exception as exc:
         raise RuntimeError("Could not create digital input plot; no placeholder was published.") from exc
 
     ints_periods = digital_in["intsPeriods"]
-    fig, ax = plt.subplots(figsize=(12, 4))
+    fig = Figure(figsize=(12, 4))
+    ax = fig.subplots()
     y = 0
     for i in range(16):
         periods = np.asarray(ints_periods[0, i]) if isinstance(ints_periods, np.ndarray) else np.empty((0, 2))
@@ -656,7 +657,6 @@ def _save_digital_plot(output_dir: Path, digital_in: dict[str, Any], *, overwrit
     ax.set_ylabel("Digital channel")
     fig.tight_layout()
     atomic_save_figure(out_path, fig, dpi=120)
-    plt.close(fig)
 
 
 def _find_existing_digital_events_file(output_dir: Path) -> Path | None:

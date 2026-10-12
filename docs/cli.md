@@ -157,6 +157,10 @@ for the resolved postprocess output; it does not compute missing metrics.
 
 ## Persistent Local and Slurm Runs
 
+Stage workers use Matplotlib's `Agg` backend to save diagnostic figures without
+a display server. This overrides an inherited interactive backend such as
+`QtAgg`, so event export and other saved plots can run on Slurm compute nodes.
+
 Persistent execution separates preprocessing, sorting, and postprocessing into
 Stages with saved analysis/configuration snapshots and per-attempt logs. The GUI
 can create these Runs. To create one without opening the GUI, first add an

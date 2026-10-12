@@ -201,6 +201,7 @@ class SlurmBackend(ExecutionBackend):
             [
                 "set -euo pipefail",
                 "export PYTHONUNBUFFERED=1",
+                "export MPLBACKEND=Agg",
                 "export OMP_NUM_THREADS=1",
                 "export MKL_NUM_THREADS=1",
                 "export OPENBLAS_NUM_THREADS=1",
