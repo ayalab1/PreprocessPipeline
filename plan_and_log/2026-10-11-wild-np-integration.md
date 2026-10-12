@@ -520,3 +520,8 @@ CI source-fix outcome:
 - Non-KS4 sorting again checks disk admission before resolving MATLAB or creating sorter logs. KS4 retains its configured exported-width/file-lifecycle estimate.
 - WILD-NP detection uses optional result metadata, consistent with existing callers. Partition channel counts are evaluated only for KS4; generic sorters retain the previous estimate without requiring KS4-only partition fields.
 - Reviewed the focused source diff. Existing tests and CI configuration are unchanged. No local tests/import checks or ongoing recording-job inspection were performed. The automatic CI result after pushing this fix is pending.
+
+CI completion:
+- Code fix 866804472d17654326c680f5802c94406a4b597f passed Basic tests run 38288850731 on both Linux and Windows. Each job reports 114 passed, 12 warnings, with no failures; the two reported disk-admission regressions are resolved in these existing checks.
+- Final CI logs were read once per completed job. No test expectations, fixtures, CI configuration or scientific parameters were changed, and no local suites or recording jobs were run for this repair.
+- This result covers the existing selected CI regressions, not real-data sorting quality, GUI/Atlaxis-import behavior or AP/LF synchronization. PR 38 retains those limitations. This completion record is a documentation-only follow-up to the tested code commit.
