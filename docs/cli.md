@@ -267,6 +267,25 @@ For Kilosort1, use `--sorter kilosort`, the Kilosort1 config, and
 on Linux. Kilosort2.5 uses `--sorter kilosort2.5` and
 `--kilosort2-5-path sorter/Kilosort2.5`. MATLAB-based versions also need MATLAB.
 
+MATLAB launch scripts, process-pool job files, and temporary logs use a private
+directory created for each worker under the system temporary directory (including
+`TMPDIR` when configured). They do not share a fixed `/tmp/preprocess_pipeline`
+directory across users. The MATLAB log is copied into the sorter output directory
+as `matlab_run.log`.
+
+To choose the runtime location explicitly, set `PREPROCESS_RUNTIME_DIR` to a
+directory you own that is writable on the compute node before submitting or
+retrying the Run. For example:
+
+```bash
+export PREPROCESS_RUNTIME_DIR=/scratch/myuser/preprocess-runtime
+mkdir -p -m 700 "$PREPROCESS_RUNTIME_DIR"
+SBATCH_EXPORT=ALL preprocess-run-controller --run-dir /scratch/preprocess/.pipeline/REPLACE_WITH_RUN_ID --retry sorting
+```
+
+`SBATCH_EXPORT=ALL` passes the environment override to Slurm workers. Retrying
+sorting reuses completed preprocessing and schedules a new postprocessing attempt.
+
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--sorter` | `kilosort` | Sorter name: `kilosort`, `kilosort2.5`, or `kilosort4`. |

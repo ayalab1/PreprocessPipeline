@@ -1,11 +1,88 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import src.preprocess.sorter_runner as sr
 import pytest
 
 from src.preprocess.channel_layout import NoActiveChannels
+
+
+@pytest.fixture
+def runtime_temp_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("PREPROCESS_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(tmp_path))
+    sr._default_runtime_root.cache_clear()
+    yield tmp_path
+    sr._default_runtime_root.cache_clear()
+
+
+@pytest.mark.parametrize("windows_shim", [False, True])
+def test_matlab_runtime_avoids_inaccessible_shared_directory(
+    runtime_temp_dir, monkeypatch, windows_shim,
+):
+    shared_dir = runtime_temp_dir / "preprocess_pipeline"
+    shared_dir.mkdir()
+    original_mkdir = Path.mkdir
+
+    def deny_shared_directory(path, *args, **kwargs):
+        if path == shared_dir or shared_dir in path.parents:
+            raise PermissionError("Shared runtime directory belongs to another user")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", deny_shared_directory)
+    monkeypatch.setattr(sr, "_is_windows", lambda: windows_shim)
+    # Restore environment mutations made by shim injection after the test.
+    for name in ("PATH", "Path", "MATLABPATH"):
+        monkeypatch.setenv(name, os.environ.get(name, ""))
+
+    output = runtime_temp_dir / "session" / "Kilosort"
+    log = sr._matlab_log_path(output)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("MATLAB test output\n", encoding="utf-8")
+    shim = sr._inject_matlab_shim("matlab", log, matlab_max_workers=2)
+
+    root = sr._runtime_root()
+    assert root != shared_dir
+    assert root.parent == runtime_temp_dir
+    assert root in log.parents and root in shim.parents
+    assert shim.is_file()
+    assert (shim.parent / "startup.m").is_file()
+    assert (shim.parent / "jobs").is_dir()
+    assert sr._matlab_log_path(output) == log
+    assert sr._persist_matlab_log(log, output).read_text(encoding="utf-8") == "MATLAB test output\n"
+    assert list(shared_dir.iterdir()) == []
+    if os.name != "nt":
+        assert root.stat().st_mode & 0o777 == 0o700
+
+
+def test_matlab_runtime_isolated_between_worker_processes(runtime_temp_dir, monkeypatch):
+    output = runtime_temp_dir / "session" / "Kilosort"
+    monkeypatch.setattr(sr.os, "getpid", lambda: 101)
+    first_log = sr._matlab_log_path(output)
+    first_log.parent.mkdir(parents=True, exist_ok=True)
+    first_log.write_text("first worker", encoding="utf-8")
+    assert sr._matlab_log_path(output) == first_log
+
+    monkeypatch.setattr(sr.os, "getpid", lambda: 202)
+    second_log = sr._matlab_log_path(output)
+    second_log.parent.mkdir(parents=True, exist_ok=True)
+    second_log.write_text("second worker", encoding="utf-8")
+    assert second_log != first_log
+    assert first_log.read_text(encoding="utf-8") == "first worker"
+    assert sr._matlab_log_path(output) == second_log
+
+
+def test_matlab_runtime_respects_explicit_override(runtime_temp_dir, monkeypatch):
+    override = runtime_temp_dir / "configured-runtime"
+    monkeypatch.setenv("PREPROCESS_RUNTIME_DIR", str(override))
+    assert sr._runtime_root() == override.resolve()
+    log = sr._matlab_log_path(runtime_temp_dir / "Kilosort")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("configured runtime", encoding="utf-8")
+    assert log.parent == override / "matlab_shim"
+    assert set(runtime_temp_dir.iterdir()) == {override}
 
 
 def test_kilosort1_defaults_match_vendored_directory_case():

@@ -8,6 +8,7 @@ import signal
 import subprocess
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, asdict
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -174,11 +175,18 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
+@lru_cache(maxsize=1)
+def _default_runtime_root(process_id: int, temp_dir: str) -> Path:
+    # Atomically create a private directory instead of sharing one fixed /tmp
+    # path between users. Include the PID in the cache key for forked workers.
+    return Path(tempfile.mkdtemp(prefix=f"preprocess_pipeline_{process_id}_", dir=temp_dir))
+
+
 def _runtime_root() -> Path:
     override = os.environ.get("PREPROCESS_RUNTIME_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    return Path(tempfile.gettempdir()) / "preprocess_pipeline"
+    return _default_runtime_root(os.getpid(), tempfile.gettempdir())
 
 
 def _matlab_shim_dir() -> Path:
