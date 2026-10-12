@@ -504,3 +504,7 @@ The user explicitly requested commit, push and a PR for this branch. The publica
 - The saved execution record confirms AP and LF publication and session.mat generation. Its latest KS4 entry records probe1 startup only; successful sorting, postprocessing, GUI behavior, Atlaxis CSV import and numerical/scientific correctness are not claimed.
 - No new tests, syntax/import checks, benchmark, recording processing or execution-status inspection was performed for publication. The initial 17-module syntax check predates later revisions.
 - Publish one coherent implementation commit with this log and documentation. Recording outputs, environments and external workspaces are excluded. PR description records the remaining validation and timing/calibration limitations.
+
+### Input-scope clarification (2026-10-12)
+
+The user requested an explicit distinction from ordinary Neuropixels support. The documentation and PR scope wording now identify this as the WILD-NP recorder's NP1 route, requiring its saved binary layout, stream metadata and configuration receipts. SpikeGLX/Open Ephys recordings are outside this route's scope; selecting NP1 geometry alone does not establish compatible input. Documentation-only follow-up, with scoped diff inspection and no tests or processing.

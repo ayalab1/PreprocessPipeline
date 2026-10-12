@@ -1,5 +1,12 @@
 # WILD-NP NP1 input
 
+This input route is specific to the WILD-NP recorder's NP1 format. It is not a
+general-purpose Neuropixels importer: it requires the WILD-NP saved binary
+layout, stream metadata and configuration receipts. Standard Neuropixels
+recordings from other acquisition systems, including SpikeGLX and Open Ephys,
+are outside the scope of this route. Selecting the Neuropixels 1.0 geometry
+does not make those recordings compatible with this WILD-NP input route.
+
 This route reuses the existing NP1 geometry, original-column channel map and
 common Kilosort4 runner. TeraSort is not required. It accepts a day directory,
 a capture directory or an individual segment. Discovery follows recording
