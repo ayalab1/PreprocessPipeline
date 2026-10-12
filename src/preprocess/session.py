@@ -123,6 +123,8 @@ def _build_epochs(merge_data: MergePointsData, basename: str) -> np.ndarray:
             )
     else:
         epochs.append({"name": basename, "startTime": 0.0})
+    for epoch, provenance in zip(epochs, merge_data.source_epochs):
+        epoch.update(provenance)
     return np.asarray(epochs, dtype=object)
 
 

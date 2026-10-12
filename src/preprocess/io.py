@@ -20,6 +20,11 @@ from scipy.io import loadmat, savemat
 from scipy.io.matlab import MatWriteError
 
 from .intan_rhd import IntanRhdHeader, read_intan_rhd_header
+from .neuropixels_geometry import NP1_GEOMETRY_NAME
+from .wildx_np import (
+    find_wildx_np_recording_directories, read_wildx_np_recording,
+    discover_wildx_np_recordings, session_recordings, ensure_separate_output, channel_map_data,
+)
 from .metafile import (
     AcquisitionCatalog,
     PreprocessConfig,
@@ -562,7 +567,7 @@ def _electrode_type_from_xml(root: ET.Element, default: str = "staggered") -> st
         return default
     value = description.text.strip().lower()
     if "neuropixel" in value:
-        return "NeuroPixel"
+        return NP1_GEOMETRY_NAME
     compact_value = re.sub(r"[\s_/-]+", "", value).replace("×", "x")
     if "buzsaki5x12" in compact_value or "buz5x12" in compact_value:
         return "Buzsaki 5x12"
@@ -613,8 +618,8 @@ def _normalize_chanmap_layout(layout: str | None) -> str:
     text = str(layout or "").strip()
     key = text.lower().replace("-", "_").replace(" ", "")
     compact_key = re.sub(r"[\s_/-]+", "", text.lower()).replace("×", "x")
-    if key in {"neuropixel", "neuro_pixel"}:
-        return "NeuroPixel"
+    if key in {"neuropixel", "neuro_pixel", "neuropixels1.0"}:
+        return NP1_GEOMETRY_NAME
     if compact_key in {"buzsaki5x12", "buz5x12"}:
         return "Buzsaki 5x12"
     if compact_key == "a5x1216buzlin5mm100200160177":
@@ -983,6 +988,15 @@ def build_channel_map_data(
     reject_channels = reject_channels or []
 
     base_path = Path(basepath)
+    if find_wildx_np_recording_directories(base_path):
+        paths = discover_subsessions(base_path, sort_files=True, alt_sort=None, ignore_folders=[])
+        recordings = session_recordings(paths)
+        if not recordings:
+            raise ValueError(f"No data-bearing NP segments found under {base_path}")
+        assignments = probe_assignments
+        if not assignments and electrode_type is not None:
+            assignments = [{"type": electrode_type, "groups": list(range(len(recordings[0].probes))), "x_offset": 0}]
+        return channel_map_data(recordings[0], reject_channels, probe_assignments=assignments)
     if basename is None:
         basename = base_path.name
         if basename.endswith(".xml"):
@@ -1094,12 +1108,12 @@ def build_channel_map_data(
                 pair_origin = (pair_idx + 1) * 400.0
                 intra_pair_offset = 80.0 if is_front else 0.0
                 x = x + pair_origin + intra_pair_offset
-            elif p_type == "NeuroPixel":
-                x_pat = [20, 60, 0, 40]
-                x = np.tile(x_pat, (n_ch // 4) + 1)[:n_ch]
-                y_base = (np.arange(n_ch) // 2) + 1
-                y = y_base * -20.0
-                x = x + shank_id * 200
+            elif p_type == NP1_GEOMETRY_NAME:
+                raise ValueError(
+                    "Neuropixels geometry requires the recorded column-to-site mapping. "
+                    "Select the WILD-NP recording as Basepath or load its existing chanMap; "
+                    "XML channel order alone does not identify electrode sites."
+                )
             elif p_type == A5X12_16_BUZ_LIN_PROBE_TYPE:
                 x, y = _middle_finger_layout_coords(
                     n_ch,
@@ -1371,8 +1385,10 @@ def resolve_local_output_dir(basepath: Path, basename: str, config: PreprocessCo
     elif config.output_dir is not None:
         root = Path(config.output_dir)
     else:
-        root = find_project_root() / "sorting_temp"
+        root = find_project_root(Path(__file__)) / "sorting_temp"
     out = root / basename
+    if out.resolve().is_relative_to(basepath.resolve()) and find_wildx_np_recording_directories(basepath):
+        ensure_separate_output(out, basepath)
     out.mkdir(parents=True, exist_ok=True)
     return out.resolve()
 
@@ -1862,6 +1878,16 @@ def discover_subsessions(
         elif direct_cont.exists():
             paths = [direct_cont]
 
+    np_directories = [directory for directory in find_wildx_np_recording_directories(basepath)
+                      if not any(token.lower() in str(directory).lower() for token in ignore_folders)]
+    if np_directories:
+        np_recordings, excluded = discover_wildx_np_recordings(basepath, ignore_folders)
+        if paths:
+            raise ValueError("Mixing WILD-NP and other acquisition formats is unsupported")
+        paths = [r.ap_path for r in np_recordings]
+        if not paths:
+            raise ValueError(f"No usable WILD-NP AP epochs under {basepath}; exclusions: {excluded}")
+
     if not paths:
         return []
 
@@ -1874,9 +1900,11 @@ def discover_subsessions(
     elif alt_sort:
         idx = _normalize_alt_sort_indices(alt_sort, len(paths))
         paths = [paths[i] for i in idx]
-    else:
+    elif not np_directories:
         paths = sorted(paths, key=_subsession_sort_key)
 
+    if np_directories:
+        session_recordings(paths)  # Explicit GUI order must also preserve chronology/contracts.
     return paths
 
 
@@ -2080,6 +2108,7 @@ def build_acquisition_catalog(
     openephys_sampling_frequency: float | None = None
     intan_paths: list[Path] = []
     intan_sample_counts: list[int] = []
+    wildx_np_recordings = []
 
     for raw_path in amplifier_paths:
         path = Path(raw_path)
@@ -2129,6 +2158,33 @@ def build_acquisition_catalog(
             continue
 
         d = path.parent
+        if path.name == "neuropixels_ap.dat":
+            info = read_wildx_np_recording(d)
+            if info is None:
+                raise ValueError(f"Empty WILD-NP attempts cannot be catalog epochs: {d}")
+            wildx_np_recordings.append(info)
+            source_types.append("wildx_np")
+            subsession_names.append(info.epoch_name)
+            recording_paths.append(d)
+            recording_stream_names.append(None)
+            ttl_event_paths_by_subsession.append(None)
+            resolved_amplifier_paths.append(info.ap_path)
+            sample_counts.append(info.sample_count)
+            source_total_channels.append(info.num_channels)
+            source_ephys_channels.append(info.num_channels)
+            source_adc_channels.append(0)
+            ephys_channel_indices_by_subsession.append(None)
+            adc_channel_indices_by_subsession.append([])
+            adc_channel_names_by_subsession.append([])
+            adc_gains_volts_by_subsession.append([])
+            adc_native_orders_by_subsession.append([])
+            adc_output_indices_by_subsession.append([])
+            adc_layout_sources_by_subsession.append("wildx_np_applied_receipt")
+            analogin_source_paths.append(None)
+            ephys_sampling_frequencies_by_subsession.append(info.sampling_frequency)
+            analog_sample_counts_by_subsession.append(None)
+            analog_sampling_frequencies_by_subsession.append(None)
+            continue
         wild_info = _resolve_wild_merged_info(d)
         if wild_info is None:
             sample_count = _validate_intan_recording(
@@ -2289,7 +2345,17 @@ def build_acquisition_catalog(
             f"{unique_ephys_channels}"
         )
 
-    if source_types and all(source_type == "openephys" for source_type in source_types):
+    if "wildx_np" in source_types:
+        if not all(source_type == "wildx_np" for source_type in source_types):
+            raise ValueError("Mixing WILDX NP and other acquisition formats is unsupported")
+        rates = {info.sampling_frequency for info in wildx_np_recordings}
+        if len(rates) != 1:
+            raise ValueError("WILDX NP subepochs have mismatched AP sampling rates")
+        catalog_source_type = "wildx_np"
+        sampling_frequency = rates.pop()
+        ttl_event_paths = []
+        amplifier_channels = unique_ephys_channels[0]
+    elif source_types and all(source_type == "openephys" for source_type in source_types):
         catalog_source_type = "openephys"
         sampling_frequency = openephys_sampling_frequency
         ttl_event_paths = [path for path in ttl_event_paths_by_subsession if path is not None]
@@ -2348,6 +2414,7 @@ def build_acquisition_catalog(
         analog_sample_counts_by_subsession=analog_sample_counts_by_subsession,
         analog_sampling_frequencies_by_subsession=analog_sampling_frequencies_by_subsession,
         adc_gains_volts_by_subsession=adc_gains_volts_by_subsession,
+        wildx_np_recordings=wildx_np_recordings,
     )
 
 
@@ -2446,6 +2513,14 @@ def save_params_and_manifest(
         "n_channels": result.n_channels,
         "sr": result.sr,
         "sr_lfp": result.sr_lfp,
+        "recording_format": result.recording_format,
+        "gain_to_uV": result.gain_to_uV,
+        "offset_to_uV": result.offset_to_uV,
+        "metadata_paths": (
+            [str(output_dir / "wildx_np_metadata.json")]
+            + ([str(result.lfp_path.with_suffix(".lfp_metadata.json"))] if result.lfp_path else [])
+            if result.recording_format == "wildx_np" else []
+        ),
         "bad_channels_0based": result.bad_channels_0based,
         "bad_channels_1based": result.bad_channels_1based,
         "subsession_paths": [str(p) for p in result.subsession_paths],

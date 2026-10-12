@@ -2,6 +2,10 @@ import os
 from importlib import import_module
 from typing import TYPE_CHECKING
 
+# Match [project].version in pyproject.toml; SpikeInterface checks this when
+# reconstructing project-defined recordings in spawned worker processes.
+__version__ = "0.1.0"
+
 os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 

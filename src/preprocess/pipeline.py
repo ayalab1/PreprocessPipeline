@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 
 import numpy as np
 from scipy.io import loadmat, savemat
@@ -46,6 +47,10 @@ from .metafile import PreprocessConfig, PreprocessResult
 from .sorting_stage import run_sorting_stage
 from .sorter_runner import execute_sorting_job
 from .state_scoring import run_state_scoring
+from .wildx_np import (
+    has_wildx_np_marker, session_recordings, prepare_session_metadata,
+    nominal_gain_to_uV, write_recorded_lfp, channel_map_data, epoch_metadata,
+)
 
 
 def _make_tree_world_rw(root: Path) -> None:
@@ -583,6 +588,34 @@ def run_preprocess_session(
     _step("Make session metafile context")
     basepath, basename = resolve_basepath_and_basename(config.basepath)
     output_dir = resolve_local_output_dir(basepath, basename, config)
+    # NP receipts determine the actual stream width/rate before XML is read.
+    np_paths = None
+    np_recordings = []
+    if has_wildx_np_marker(basepath):
+        np_paths = discover_subsessions(
+            basepath=basepath, sort_files=config.sort_files, alt_sort=config.alt_sort,
+            ignore_folders=config.ignore_folders, subsession_order=config.subsession_order)
+        np_recordings = session_recordings(np_paths)
+    if np_recordings:
+        if config.analog_inputs or config.digital_inputs:
+            raise ValueError("WILDX NP mixed sensor/event streams require their own decoder; disable analog/digital export")
+        if config.artifact_ttl_group_mode != "none" or config.artifact_highamp_group_mode != "none":
+            raise ValueError("WILD-NP artifact interpolation requires a separate segment-aware adapter; disable artifact removal")
+        if config.state_score:
+            raise ValueError("WILDX NP state scoring requires verified AP/LF time alignment")
+        if np.dtype(config.dtype) != np.dtype("int16"):
+            raise ValueError("WILDX NP output currently requires INT16 storage")
+        xml_path, np_chanmap = prepare_session_metadata(
+            np_recordings, output_dir=output_dir, basename=basename,
+            reject_channels=config.reject_channels, overwrite=config.overwrite,
+            source_basepath=basepath, ignore_folders=config.ignore_folders, lfp_fs=config.lfp_fs,
+            probe_assignments=config.probe_assignments)
+        config = replace(config, xml_path=xml_path, chanmap_mat_path=np_chanmap,
+                         dtype="int16", gain_to_uV=nominal_gain_to_uV(np_recordings[0], "ap"),
+                         offset_to_uV=0.,
+                         sorter_partition_mode="probe")
+        print(f"Detected acquisition: wildx_np; {np_recordings[0].num_channels} saved columns; "
+              f"AP {np_recordings[0].sampling_frequency:g} Hz; nominal gain {config.gain_to_uV:g} uV/count")
 
     xml_path = ensure_xml(
         basepath,
@@ -591,7 +624,7 @@ def run_preprocess_session(
         explicit_xml_path=config.xml_path,
         overwrite=config.overwrite,
     )
-    rhd_path = ensure_rhd(
+    rhd_path = None if np_recordings else ensure_rhd(
         basepath,
         output_dir,
         basename,
@@ -608,13 +641,9 @@ def run_preprocess_session(
             print(f"Warning: failed to parse info.rhd ({rhd_path}): {exc}")
 
     _step("Discover input recordings")
-    subsession_paths = discover_subsessions(
-        basepath=basepath,
-        sort_files=config.sort_files,
-        alt_sort=config.alt_sort,
-        ignore_folders=config.ignore_folders,
-        subsession_order=config.subsession_order,
-    )
+    subsession_paths = np_paths if np_paths is not None else discover_subsessions(
+        basepath=basepath, sort_files=config.sort_files, alt_sort=config.alt_sort,
+        ignore_folders=config.ignore_folders, subsession_order=config.subsession_order)
     print("Subsession file order:")
     for idx, path in enumerate(subsession_paths, start=1):
         try:
@@ -652,7 +681,7 @@ def run_preprocess_session(
         )
 
     # Neurocode-compatible behavior: Intan uses XML-derived amplifier metadata.
-    if catalog.source_type == "openephys":
+    if catalog.source_type in {"openephys", "wildx_np"}:
         effective_sr = float(catalog.sampling_frequency if catalog.sampling_frequency is not None else xml_meta.sr)
         effective_n_channels = int(catalog.amplifier_channels)
         digital_sr = effective_sr
@@ -712,6 +741,8 @@ def run_preprocess_session(
         foldernames=catalog.subsession_names,
         sample_counts=catalog.sample_counts,
     )
+    if np_recordings:
+        merge_data.source_epochs = epoch_metadata(np_recordings)
     mergepoints_path = output_dir / f"{basename}.MergePoints.events.mat"
     save_mergepoints_events_mat(mergepoints_path, merge_data, overwrite=config.overwrite)
 
@@ -927,6 +958,9 @@ def run_preprocess_session(
         xml_rejected.update(set(range(int(xml_meta.n_channels))) - included)
     xml_rejected_final = _normalize_reject_channels_for_final_channel_space(
         sorted(xml_rejected), reject_channel_remap)
+    if np_recordings:
+        recording_base.annotate(recording_format="wildx_np",
+                                wildx_np_sample_counts=[r.sample_count for r in np_recordings])
     recording_raw, bad_0, bad_1 = attach_probe_and_remove_bad_channels(
         recording=recording_base,
         chanmap_mat_path=effective_chanmap_mat_path,
@@ -1264,14 +1298,20 @@ def run_preprocess_session(
     lfp_path: Path | None = None
     if config.make_lfp:
         lfp_path = output_dir / f"{basename}.lfp"
-        write_lfp(
-            recording_raw=recording_base,
-            lfp_path=lfp_path,
-            lfp_fs=config.lfp_fs,
-            dtype=config.dtype,
-            overwrite=config.overwrite,
-            job_kwargs=config.job_kwargs,
-        )
+        if np_recordings:
+            write_recorded_lfp(np_recordings, output_path=lfp_path, lfp_fs=config.lfp_fs,
+                               overwrite=config.overwrite, job_kwargs=config.job_kwargs)
+            print(f"Recorded LF resampled to {config.lfp_fs:g} Hz in AP storage units; "
+                  "AP/LF time alignment is unverified (see .lfp_metadata.json)")
+        else:
+            write_lfp(
+                recording_raw=recording_base,
+                lfp_path=lfp_path,
+                lfp_fs=config.lfp_fs,
+                dtype=config.dtype,
+                overwrite=config.overwrite,
+                job_kwargs=config.job_kwargs,
+            )
 
     session_dat_path = output_dir / f"{basename}.dat"
     if not session_dat_path.exists():
@@ -1298,6 +1338,21 @@ def run_preprocess_session(
         merge_data=merge_data,
         xml_meta=session_xml_meta,
     )
+    if np_recordings:
+        np_geometry = channel_map_data(np_recordings[0], config.reject_channels,
+                                       probe_assignments=config.probe_assignments)
+        session_struct["extracellular"]["chanCoords"] = {
+            "x": np_geometry["xcoords"], "y": np_geometry["ycoords"],
+            "layout": "custom", "source": "WILDX NP1 applied sites with configured probe x offsets"}
+        session_struct["extracellular"]["leastSignificantBit"] = config.gain_to_uV
+        session_struct["extracellular"]["lfpLeastSignificantBit"] = config.gain_to_uV
+        session_struct["extracellular"]["sourceLfpLeastSignificantBit"] = nominal_gain_to_uV(np_recordings[0], "lfp")
+        session_struct["extracellular"]["lfpApAlignmentVerified"] = False
+        session_struct["extracellular"]["gainCalibrationApplied"] = False
+        session_struct["extracellular"]["adcCalibrationStatus"] = "unknown from saved metadata"
+        session_struct["extracellular"]["amplitudeScale"] = "nominal uV per AP storage count; derived LF uses the same units"
+        session_struct["extracellular"]["adcBits"] = 10
+        session_struct["extracellular"]["storageBits"] = 16
     session_mat_path = output_dir / f"{basename}.session.mat"
     save_session_mat(session_mat_path, session_struct, overwrite=config.overwrite)
 
@@ -1367,6 +1422,9 @@ def run_preprocess_session(
         sorter_partition_manifest_path=None,
         state_score_paths=state_score_paths,
         state_score_figure_paths=state_score_figure_paths,
+        gain_to_uV=config.gain_to_uV if np_recordings else None,
+        offset_to_uV=config.offset_to_uV if np_recordings else None,
+        recording_format="wildx_np" if np_recordings else None,
     )
 
     if config.sorter:

@@ -922,6 +922,15 @@ def _resolve_recording_for_postprocess(config: PostprocessConfig):
     if config.recording is None and (config.sampling_frequency is None or config.num_channels is None):
         raise ValueError("sampling_frequency and num_channels are required when dat_path is used")
 
+    from ..preprocess.wildx_np import load_output_metadata
+    np_metadata = load_output_metadata(config.dat_path)
+    if np_metadata is None and config.recording is not None:
+        np_metadata = config.recording.get_annotation("wildx_np_boundary_metadata")
+    if np_metadata is not None:
+        if (config.binary_offset != 0 or np.dtype(config.dtype) != np.dtype("<i2")
+                or (config.num_channels is not None and config.num_channels != np_metadata["num_channels"])
+                or (config.sampling_frequency is not None and config.sampling_frequency != np_metadata["sampling_frequency"])):
+            raise ValueError("NP postprocess settings differ from the saved AP contract")
     if config.recording is not None:
         rec_raw = config.recording
     else:
@@ -934,10 +943,21 @@ def _resolve_recording_for_postprocess(config: PostprocessConfig):
             sampling_frequency=float(config.sampling_frequency),
             dtype=config.dtype,
             num_channels=int(config.num_channels),
-            gain_to_uV=config.gain_to_uV,
-            offset_to_uV=config.offset_to_uV,
+            gain_to_uV=np_metadata["ap_gain_to_uV"] if np_metadata else config.gain_to_uV,
+            offset_to_uV=0. if np_metadata else config.offset_to_uV,
             file_offset=config.binary_offset,
         )
+    if np_metadata is not None:
+        if (rec_raw.get_sampling_frequency() != np_metadata["sampling_frequency"]
+                or rec_raw.get_num_samples() != sum(s["ap_samples"] for s in np_metadata["sources"])):
+            raise ValueError("NP recording view differs from its saved AP sample mapping")
+        boundary_metadata = {key: np_metadata[key] for key in
+                             ("sampling_frequency", "num_channels", "ap_gain_to_uV", "boundary_policy")}
+        boundary_metadata["sources"] = [{"ap_samples": source["ap_samples"],
+                                          "epoch": {key: source["epoch"][key] for key in ("startSample", "stopSample")}}
+                                         for source in np_metadata["sources"]]
+        rec_raw.annotate(recording_format="wildx_np", wildx_np_boundary_metadata=boundary_metadata,
+                         wildx_np_sample_counts=[s["ap_samples"] for s in np_metadata["sources"]])
     if config.num_channels is not None and hasattr(rec_raw, "annotate"):
         rec_raw.annotate(binary_num_channels=int(config.num_channels))
     rejects = set(config.reject_channels)
@@ -998,6 +1018,9 @@ def _resolve_recording_for_postprocess(config: PostprocessConfig):
     else:
         rec_processed = rec_with_probe
 
+    if np_metadata is not None:
+        rec_processed.annotate(recording_format="wildx_np", wildx_np_boundary_metadata=boundary_metadata,
+                               wildx_np_sample_counts=[s["ap_samples"] for s in np_metadata["sources"]])
     if good_channels:
         return select_recording_channels(rec_processed, good_channels)
     return rec_processed
@@ -1220,6 +1243,10 @@ def _analyzer_input_identity(recording, sorting_folder: Path, config: Postproces
         "n_components": config.n_components,
         "pc_mode": config.pc_mode,
     })
+    if recording.get_annotation("recording_format") == "wildx_np":
+        payload["wildx_np_boundary_policy"] = {
+            "sample_counts": recording.get_annotation("wildx_np_sample_counts"),
+        }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -1760,8 +1787,8 @@ def build_preprocessed_recording_from_result(
         sampling_frequency=result.sr,
         dtype=preprocess_config.dtype,
         num_channels=result.n_channels,
-        gain_to_uV=preprocess_config.gain_to_uV,
-        offset_to_uV=preprocess_config.offset_to_uV,
+        gain_to_uV=(preprocess_config.gain_to_uV if result.gain_to_uV is None else result.gain_to_uV),
+        offset_to_uV=(preprocess_config.offset_to_uV if result.offset_to_uV is None else result.offset_to_uV),
         chanmap_mat_path=_resolve_effective_chanmap_for_postprocess(
             (Path(result.local_output_dir) / _CANONICAL_CHANMAP_NAME
              if (Path(result.local_output_dir) / _CANONICAL_CHANMAP_NAME).exists()

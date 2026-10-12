@@ -13,6 +13,7 @@ from scipy import signal
 import spikeinterface as si
 import spikeinterface.extractors as se
 import spikeinterface.preprocessing as spre
+from spikeinterface.core import BaseRecordingSegment
 from spikeinterface.preprocessing.basepreprocessor import BasePreprocessor, BasePreprocessorSegment
 from spikeinterface.preprocessing.filter import fix_dtype
 
@@ -137,6 +138,22 @@ def attach_probe_from_chanmap(recording: Any, chanmap_mat_path: Path, *, origina
     shank_ids = shank_ids[:n_contacts]
     probe_ids = probe_ids[:n_contacts]
     device_ch_inds = device_ch_inds[:n_contacts]
+
+    finite_locations = np.isfinite(x) & np.isfinite(y)
+    if mat.get("recording_format") == "wildx_np" and not np.all(finite_locations):
+        connected = np.asarray(mat["connected"]).reshape(-1)[:n_contacts]
+        if np.any(connected & ~finite_locations):
+            raise ValueError("An active chanMap channel has no finite geometry")
+        if not set(original_ids).issubset(set(device_ch_inds.tolist())):
+            raise ValueError("NP chanMap lacks requested original binary columns")
+        positions_by_channel = {int(ch): index for index, ch in enumerate(device_ch_inds)}
+        rows = [positions_by_channel[ch] for ch in original_ids]
+        recording.set_channel_locations(np.column_stack((x[rows], y[rows])))
+        groups = _build_chanmap_group_properties(chanmap_mat_path, original_ids)
+        for key, values in groups.items():
+            _set_channel_property_compat(recording, original_ids, key, values)
+        _set_channel_property_compat(recording, original_ids, "group", groups["artifact_group_probe"])
+        return recording
 
     n_recording_channels = int(recording.get_num_channels())
     valid_mask = np.isin(device_ch_inds, original_ids)
@@ -1099,6 +1116,25 @@ def preprocess_selected_channels_preserve_shape(
     reference: str,
     local_radius_um: tuple[float, float],
 ) -> Any:
+    counts = recording_raw.get_annotation("wildx_np_sample_counts")
+    if recording_raw.get_annotation("recording_format") == "wildx_np" and counts and len(counts) > 1:
+        # Slice before constructing the filter: SI padding can only see samples
+        # from this saved interval, even when the writer requests a boundary chunk.
+        if sum(counts) != recording_raw.get_num_samples():
+            raise ValueError("NP epoch sizes disagree with the AP recording")
+        processed, start = [], 0
+        for count in counts:
+            segment = recording_raw.frame_slice(start_frame=start, end_frame=start + count)
+            segment.annotate(recording_format="wildx_np", wildx_np_sample_counts=[count])
+            processed.append(preprocess_selected_channels_preserve_shape(
+                recording_raw=segment, selected_channel_ids=selected_channel_ids,
+                bandpass_min_hz=bandpass_min_hz, bandpass_max_hz=bandpass_max_hz,
+                reference=reference, local_radius_um=local_radius_um))
+            start += count
+        combined = concatenate_recordings_si(processed)
+        combined.annotate(recording_format="wildx_np", wildx_np_sample_counts=list(counts))
+        return combined
+
     all_channel_ids = list(recording_raw.get_channel_ids())
     if not all_channel_ids:
         return recording_raw
@@ -1109,19 +1145,53 @@ def preprocess_selected_channels_preserve_shape(
         return recording_raw
 
     rec_selected = select_recording_channels(recording_raw, selected_ids_in_order)
-    rec_selected_pre = apply_preprocessing(
-        recording_raw=rec_selected,
-        bandpass_min_hz=bandpass_min_hz,
-        bandpass_max_hz=bandpass_max_hz,
-        reference=reference,
-        local_radius_um=local_radius_um,
-    )
+    if recording_raw.get_annotation("recording_format") == "wildx_np":
+        # NP coordinates are relative to each physical probe. Reference each
+        # probe separately so overlapping coordinates never mix its signals.
+        probe_groups = rec_selected.get_property("artifact_group_probe")
+        processed_probes = []
+        for probe_group in np.unique(probe_groups):
+            probe_channel_ids = rec_selected.get_channel_ids()[probe_groups == probe_group].tolist()
+            processed_probes.append(apply_preprocessing(
+                recording_raw=select_recording_channels(rec_selected, probe_channel_ids),
+                bandpass_min_hz=bandpass_min_hz,
+                bandpass_max_hz=bandpass_max_hz,
+                reference=reference,
+                local_radius_um=local_radius_um,
+            ))
+        rec_selected_pre = _aggregate_wildx_np_channels(processed_probes, rec_selected)
+    else:
+        rec_selected_pre = apply_preprocessing(
+            recording_raw=rec_selected,
+            bandpass_min_hz=bandpass_min_hz,
+            bandpass_max_hz=bandpass_max_hz,
+            reference=reference,
+            local_radius_um=local_radius_um,
+        )
     return _merge_selected_with_bypass_preserve_order(
         recording_raw=recording_raw,
         recording_selected_processed=rec_selected_pre,
         selected_set=selected_set,
         all_channel_ids=all_channel_ids,
     )
+
+
+def _aggregate_wildx_np_channels(recordings: list[Any], source_recording: Any) -> Any:
+    if len(recordings) == 1:
+        return recordings[0]
+
+    # SI aggregation requires globally unique coordinates, whereas separate NP
+    # probes legitimately share relative coordinates. Omit locations only on
+    # private clones during aggregation, then restore the actual coordinates.
+    channel_ids = np.concatenate([rec.get_channel_ids() for rec in recordings])
+    locations = source_recording.get_channel_locations(channel_ids=channel_ids)
+    runs = [rec.clone() for rec in recordings]
+    for rec in runs:
+        rec.delete_property("location")
+    combined = si.aggregate_channels(runs, renamed_channel_ids=channel_ids)
+    combined.set_channel_locations(locations)
+    combined.annotate(recording_format="wildx_np")
+    return combined
 
 
 def _merge_selected_with_bypass_preserve_order(
@@ -1163,6 +1233,8 @@ def _merge_selected_with_bypass_preserve_order(
 
     if len(run_recordings) == 1:
         return run_recordings[0]
+    if recording_raw.get_annotation("recording_format") == "wildx_np":
+        return _aggregate_wildx_np_channels(run_recordings, recording_raw)
     return si.aggregate_channels(run_recordings)
 
 
@@ -1209,6 +1281,59 @@ def zero_selected_channels_preserve_shape(
         selected_channel_ids=selected_channel_ids,
         transform_fn=_zero_and_cast,
     )
+
+
+class _PolyphaseLfpRecording(BasePreprocessor):
+    """Stream LF resampling on a fixed rational grid, then quantize once."""
+
+    def __init__(self, recording, *, sampling_frequency, up, down, scale_factor):
+        BasePreprocessor.__init__(self, recording, sampling_frequency=sampling_frequency, dtype="<i2")
+        up, down = int(up), int(down)
+        scale_factor = float(scale_factor)
+        self.set_channel_gains(np.asarray(recording.get_channel_gains()) / scale_factor)
+        for parent in recording._recording_segments:
+            self.add_recording_segment(_PolyphaseLfpRecordingSegment(
+                parent, sampling_frequency=sampling_frequency,
+                source_frequency=recording.get_sampling_frequency(),
+                up=up, down=down, scale_factor=scale_factor))
+        self._kwargs = dict(recording=recording, sampling_frequency=float(sampling_frequency),
+                            up=up, down=down, scale_factor=scale_factor)
+
+
+class _PolyphaseLfpRecordingSegment(BaseRecordingSegment):
+    def __init__(self, parent, *, sampling_frequency, source_frequency, up, down, scale_factor):
+        BaseRecordingSegment.__init__(self, sampling_frequency=sampling_frequency)
+        self.parent = parent
+        self.up, self.down = up, down
+        self.scale_factor = scale_factor
+        self.source_samples = parent.get_num_samples()
+        self.output_samples = (self.source_samples * up + down - 1) // down
+        half_length = 10 * max(up, down)
+        self.kernel = (None if up == down else
+                       signal.firwin(2 * half_length + 1, 1. / max(up, down), window=("kaiser", 5.)))
+        # The requested interval lies inside both the FIR support and the
+        # low-pass filter's overlap. Only true segment ends use edge padding.
+        self.margin = int(np.ceil(source_frequency * .1)) + (half_length + up - 1) // up
+
+    def get_num_samples(self):
+        return self.output_samples
+
+    def get_traces(self, start_frame, end_frame, channel_indices):
+        # Source starts divisible by down map to integer output indices, so
+        # independently requested chunks share the same polyphase grid.
+        source_start = max(0, ((start_frame * self.down // self.up - self.margin)
+                               // self.down) * self.down)
+        source_end = min(self.source_samples,
+                         (end_frame * self.down + self.up - 1) // self.up + self.margin)
+        traces = self.parent.get_traces(source_start, source_end, channel_indices)
+        if self.kernel is not None:
+            traces = signal.resample_poly(traces, self.up, self.down, axis=0,
+                                          window=self.kernel, padtype="reflect")
+        offset = start_frame - source_start * self.up // self.down
+        traces = np.rint(traces[offset:offset + end_frame - start_frame] * self.scale_factor)
+        if not np.all(np.isfinite(traces)) or np.any(traces < -32768) or np.any(traces > 32767):
+            raise ValueError("Resampled NP LF exceeds finite int16 storage in AP count units")
+        return traces.astype("<i2")
 
 
 def write_lfp(
