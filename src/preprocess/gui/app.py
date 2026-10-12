@@ -80,6 +80,11 @@ from src.preprocess.io import (
     set_tree_world_rw,
 )
 from src.preprocess.multiday import MULTI_DAY_MANIFEST, discover_multi_day_subepochs
+from src.preprocess.wildx_np import (
+    has_wildx_np_marker, session_recordings, prepare_session_metadata,
+    channel_map_data,
+)
+from src.preprocess.neuropixels_geometry import NP1_GEOMETRY_NAME, np1_site_geometry
 from src.preprocess.paths import find_project_root, resolve_project_path
 from src.worker_defaults import default_worker_count, normalize_worker_count
 from src.execution.backends import SlurmCapabilities, detect_slurm_capabilities
@@ -106,14 +111,17 @@ from .anatomical_map import (
     AnatomicalChannelGroup,
     AnatomicalMapError,
     channel_groups_from_chanmap_data,
+    is_atlaxis_anatomical_csv,
     load_anatomical_map_csv,
+    parse_anatomical_map_csv,
+    parse_atlaxis_anatomical_csv,
     save_anatomical_map_csv,
 )
 from .preflight import CheckResult, run_preflight
 from .run_pipeline import ERROR_PREFIX, RESULT_PREFIX
 
 
-REPO_ROOT = find_project_root()
+REPO_ROOT = find_project_root(Path(__file__))
 CONFIG_DIR = REPO_ROOT / "config"
 PUBLIC_DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "preprocess_gui_default_config.json"
 LOCAL_DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "preprocess_gui_default_config.local.json"
@@ -244,7 +252,7 @@ PROBE_TYPES = (
     "linear",
     "neurogrid",
     "double_sided",
-    "NeuroPixel",
+    NP1_GEOMETRY_NAME,
 )
 
 SORTER_DEFAULTS: dict[str, tuple[str, str]] = {
@@ -826,204 +834,217 @@ class ChanMapCanvas(QWidget):
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setMinimumSize(280, 180)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.summary = QLabel("No chanMap loaded")
-        self.summary.setWordWrap(True)
         self._ax: Any | None = None
-        self._full_xlim: tuple[float, float] | None = None
-        self._full_ylim: tuple[float, float] | None = None
+        self._full_limits: dict[Any, tuple[tuple[float, float], tuple[float, float]]] = {}
+        self._points_by_axes: dict[Any, dict[str, np.ndarray]] = {}
+        self._np_markers: list[tuple[Any, float, float]] = []
         self._drag_start: tuple[float, float] | None = None
+        self._pan_start: tuple[float, float, tuple[float, float], tuple[float, float]] | None = None
         self._selection_patch: Rectangle | None = None
         self.canvas.mpl_connect("scroll_event", self._on_scroll)
         self.canvas.mpl_connect("button_press_event", self._on_button_press)
         self.canvas.mpl_connect("motion_notify_event", self._on_motion)
         self.canvas.mpl_connect("button_release_event", self._on_button_release)
+        self.canvas.mpl_connect("draw_event", self._update_np_marker_sizes)
         layout.addWidget(self.canvas, 1)
-        layout.addWidget(self.summary)
         self.show_empty()
 
-    def show_empty(self) -> None:
+    def show_empty(self, message: str = "Generate or load chanMap.mat") -> None:
+        self._points_by_axes.clear()
+        self._full_limits.clear()
+        self._np_markers.clear()
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        self.figure.subplots_adjust(left=0.07, right=0.995, bottom=0.16, top=0.90)
+        self.figure.subplots_adjust(left=0.065, right=0.985, bottom=0.10, top=0.94)
         self._ax = ax
-        self._full_xlim = None
-        self._full_ylim = None
         self._drag_start = None
+        self._pan_start = None
         self._selection_patch = None
         ax.set_facecolor("#252525")
-        ax.text(
-            0.5,
-            0.5,
-            "Generate or load chanMap.mat",
-            ha="center",
-            va="center",
-            color="#d4d4d4",
-        )
+        ax.text(0.5, 0.5, message, ha="center", va="center", color="#d4d4d4", wrap=True)
         ax.set_axis_off()
         self.canvas.draw_idle()
-        self.summary.setText("No chanMap loaded")
+        self.canvas.setToolTip("")
 
     def load_chanmap(self, path: Path) -> None:
         if not path.exists():
-            self.show_empty()
-            self.summary.setText(f"chanMap not found: {path}")
+            self.show_empty(f"chanMap not found: {path}")
             return
         self.render_chanmap(loadmat(path), source=path)
 
     def render_chanmap(self, data: dict[str, Any], *, source: Path | str) -> None:
-        x = np.asarray(data["xcoords"]).reshape(-1)
-        y = np.asarray(data["ycoords"]).reshape(-1)
+        x = np.asarray(data["xcoords"], dtype=float).reshape(-1)
+        y = np.asarray(data["ycoords"], dtype=float).reshape(-1)
         kcoords = np.asarray(data.get("kcoords", np.ones_like(x))).reshape(-1)
-        probe_ids = np.asarray(data.get("probe_ids", np.ones_like(x))).reshape(-1)
+        probe_ids = np.asarray(data.get("probe_ids", np.ones_like(x))).reshape(-1).astype(int)
         connected = np.asarray(data["connected"], dtype=float).reshape(-1) > 0
         device_ch = np.asarray(
             data["chanMap0ind"] if "chanMap0ind" in data else np.asarray(data["chanMap"]).reshape(-1) - 1
         ).reshape(-1).astype(int)
 
         n = min(len(x), len(y), len(kcoords), len(probe_ids), len(connected), len(device_ch))
-        x = x[:n]
-        y = y[:n]
-        kcoords = kcoords[:n]
-        probe_ids = probe_ids[:n]
-        connected = connected[:n]
-        device_ch = device_ch[:n]
+        x, y, kcoords = x[:n], y[:n], kcoords[:n]
+        probe_ids, connected, device_ch = probe_ids[:n], connected[:n], device_ch[:n]
+        site_ids = np.asarray(data.get("site_ids", np.full(n, -1))).reshape(-1)[:n].astype(int)
+        profile = str(np.asarray(data.get("geometry_profile", "")).reshape(-1)[0])
+        is_np1 = profile == NP1_GEOMETRY_NAME
+        unique_probes = sorted(set(probe_ids.tolist()))
+        finite = np.isfinite(x) & np.isfinite(y)
 
+        self._np_markers.clear()
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        self.figure.subplots_adjust(left=0.07, right=0.995, bottom=0.16, top=0.90)
+        self.figure.subplots_adjust(left=0.065, right=0.985, bottom=0.10, top=0.94)
+        ax.set_title("Probe layout", color="#f5f5f5", fontsize=11)
         self._ax = ax
         self._drag_start = None
+        self._pan_start = None
         self._selection_patch = None
-        ax.set_facecolor("#252525")
-        probe_keys = [int(p) for p in probe_ids.tolist()]
-        unique_probes = sorted(set(probe_keys))
+        self._full_limits.clear()
+        self._points_by_axes.clear()
         palette = [
-            "#80deea",
-            "#b39ddb",
-            "#a5d6a7",
-            "#ffcc80",
-            "#90caf9",
-            "#ce93d8",
-            "#c5e1a5",
-            "#f48fb1",
-            "#bcaaa4",
-            "#fff59d",
-            "#9fa8da",
-            "#ffab91",
-            "#b0bec5",
-            "#81c784",
-            "#64b5f6",
-            "#e6ee9c",
-            "#f8bbd0",
-            "#d7ccc8",
-            "#b2dfdb",
-            "#d1c4e9",
+            "#80deea", "#b39ddb", "#a5d6a7", "#ffcc80", "#90caf9",
+            "#ce93d8", "#c5e1a5", "#f48fb1", "#bcaaa4", "#fff59d",
+            "#9fa8da", "#ffab91", "#b0bec5", "#81c784", "#64b5f6",
+            "#e6ee9c", "#f8bbd0", "#d7ccc8", "#b2dfdb", "#d1c4e9",
         ]
-        color_by_probe = {
-            probe: palette[idx % len(palette)] for idx, probe in enumerate(unique_probes)
-        }
-        point_colors = np.array([color_by_probe[probe] for probe in probe_keys], dtype=object)
-        ax.scatter(
-            x[connected],
-            y[connected],
-            c=point_colors[connected],
-            s=42,
-            edgecolor="#252525",
-            linewidth=0.3,
-            clip_on=True,
-            zorder=2,
-        )
-        if np.any(~connected):
-            ax.scatter(
-                x[~connected],
-                y[~connected],
-                c="red",
-                marker="x",
-                s=70,
-                linewidth=1.8,
-                clip_on=True,
-                zorder=3,
-            )
+        color_by_probe = {probe: palette[index % len(palette)] for index, probe in enumerate(unique_probes)}
+        ax.set_facecolor("#252525")
+        point_xy = [np.column_stack((x[finite], y[finite]))]
+        point_channels = [device_ch[finite]]
+        point_probes = [probe_ids[finite]]
+        point_sites = [site_ids[finite]]
+        point_connected = [connected[finite]]
+        inactive_label = "Inactive sites"
 
-        if n <= 256:
-            for xi, yi, ch, is_connected in zip(x, y, device_ch, connected):
-                color = "#e5e7eb" if is_connected else "#f87171"
-                ax.text(
-                    float(xi),
-                    float(yi),
-                    str(int(ch)),
-                    fontsize=7,
-                    ha="center",
-                    va="bottom",
-                    color=color,
-                    clip_on=False,
-                    zorder=4,
+        if is_np1:
+            geometry = np1_site_geometry()
+            for port in unique_probes:
+                known = (finite & (probe_ids == port) & (site_ids >= 0)
+                         & (site_ids < len(geometry["site_ids"])))
+                if not np.any(known):
+                    continue
+                # Locate the complete physical catalog from a recorded site.
+                first = int(np.flatnonzero(known)[0])
+                offset = x[first] - geometry["xcoords"][site_ids[first]]
+                gx = geometry["xcoords"] + offset
+                gy = geometry["ycoords"]
+                inactive = ~np.isin(geometry["site_ids"], site_ids[known & connected])
+                dots = ax.scatter(
+                    gx[inactive], gy[inactive], c="#78818f", s=1, linewidths=0,
+                    clip_on=True, zorder=1, label=inactive_label,
                 )
+                self._np_markers.append((dots, 10., 1.1))
+                inactive_label = "_nolegend_"
+                unrecorded = ~np.isin(geometry["site_ids"], site_ids[known])
+                count = int(np.count_nonzero(unrecorded))
+                point_xy.append(np.column_stack((gx[unrecorded], gy[unrecorded])))
+                point_channels.append(np.full(count, -1, dtype=int))
+                point_probes.append(np.full(count, port, dtype=int))
+                point_sites.append(geometry["site_ids"][unrecorded])
+                point_connected.append(np.zeros(count, dtype=bool))
 
-        source_text = str(source)
-        title = Path(source_text).name if source_text and source_text != "current settings" else source_text
-        ax.set_title(title, color="#f5f5f5")
+        for port in unique_probes:
+            active = finite & connected & (probe_ids == port)
+            dots = ax.scatter(
+                x[active], y[active], c=color_by_probe[port], s=1 if is_np1 else 35,
+                edgecolor="none" if is_np1 else "#252525",
+                linewidth=0 if is_np1 else 0.25, clip_on=True, zorder=2,
+                label=f"Probe {port}",
+            )
+            if is_np1:
+                self._np_markers.append((dots, 7., 1.5))
+        excluded = finite & ~connected
+        if np.any(excluded) and not is_np1:
+            ax.scatter(
+                x[excluded], y[excluded], c="#ff6b6b", marker="x", s=48,
+                linewidth=1.4, clip_on=True, zorder=3, label="Excluded",
+            )
+        if not is_np1 and np.count_nonzero(finite) <= 256:
+            for point in np.flatnonzero(finite):
+                ax.annotate(
+                    str(int(device_ch[point])), (x[point], y[point]),
+                    xytext=(0, 4), textcoords="offset points", fontsize=7,
+                    ha="center", color="#e5e7eb" if connected[point] else "#f87171",
+                    clip_on=True, zorder=4,
+                )
+        ax.legend(loc="upper right", facecolor="#252525", edgecolor="#555555",
+                  labelcolor="#e5e7eb", fontsize=9, markerscale=1.5, borderaxespad=0.8)
         ax.set_xlabel("x (um)", color="#d4d4d4")
         ax.set_ylabel("y (um)", color="#d4d4d4")
-        ax.tick_params(colors="#a3a3a3")
+        ax.tick_params(colors="#a3a3a3", labelsize=9)
+        ax.ticklabel_format(axis="x", style="plain", useOffset=False)
         for spine in ax.spines.values():
-            spine.set_color("#404040")
-        ax.set_aspect("equal", adjustable="box", anchor="C")
-        ax.grid(True, alpha=0.25, color="#737373")
-        finite_x = x[np.isfinite(x)]
-        finite_y = y[np.isfinite(y)]
-        if finite_x.size > 0 and finite_y.size > 0:
-            x_min = float(np.min(finite_x))
-            x_max = float(np.max(finite_x))
-            y_min = float(np.min(finite_y))
-            y_max = float(np.max(finite_y))
-            x_range = max(1.0, x_max - x_min)
-            y_range = max(1.0, y_max - y_min)
-            x_pad = max(180.0, x_range * 0.20)
-            y_pad = max(180.0, y_range * 0.20)
-            ax.set_xlim(x_min - x_pad, x_max + x_pad)
-            ax.set_ylim(y_min - y_pad, y_max + y_pad)
-        self._full_xlim = tuple(float(v) for v in ax.get_xlim())
-        self._full_ylim = tuple(float(v) for v in ax.get_ylim())
+            spine.set_color("#505050")
+        # Fill the axes area and preserve equal units by expanding the view limits.
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_axisbelow(True)
+        ax.grid(True, alpha=0.18, color="#737373")
+        xy = np.concatenate(point_xy, axis=0)
+        if xy.size:
+            x_min, y_min = np.min(xy, axis=0)
+            x_max, y_max = np.max(xy, axis=0)
+            x_pad = max(20., (x_max - x_min) * 0.12)
+            y_pad = max(40., (y_max - y_min) * 0.04)
+            ax.set_xbound(x_min - x_pad, x_max + x_pad)
+            ax.set_ybound(y_min - y_pad, y_max + y_pad)
+        self._full_limits[ax] = (tuple(ax.get_xlim()), tuple(ax.get_ylim()))
+        self._points_by_axes[ax] = {
+            "xy": xy, "channels": np.concatenate(point_channels),
+            "probes": np.concatenate(point_probes), "sites": np.concatenate(point_sites),
+            "connected": np.concatenate(point_connected),
+        }
+        self.canvas.setToolTip("")
         self.canvas.draw_idle()
 
-        bad = device_ch[~connected].astype(int).tolist()
-        probes = sorted(set(int(v) for v in probe_ids.tolist()))
-        shanks = sorted(set(int(v) for v in kcoords.tolist()))
-        self.summary.setText(
-            f"{source_text}\n"
-            f"channels={n}, connected={int(np.sum(connected))}, bad={len(bad)}, "
-            f"probes={len(probes)}, groups/shanks={len(shanks)}\n"
-            f"bad channels: {bad[:40]}{' ...' if len(bad) > 40 else ''}"
-        )
+    def _update_np_marker_sizes(self, _event: Any) -> None:
+        # Atlaxis-style marker diameters in coordinate units, with a small
+        # pixel minimum for the full-shaft view. These are display sizes only.
+        changed = False
+        for dots, diameter_um, minimum_pixels in self._np_markers:
+            transform = dots.axes.transData
+            origin, unit = transform.transform([[0., 0.], [1., 0.]])
+            pixels_per_um = float(np.linalg.norm(unit - origin))
+            diameter = max(minimum_pixels, diameter_um * pixels_per_um)
+            area = (diameter * 72. / self.figure.dpi) ** 2
+            sizes = dots.get_sizes()
+            if sizes.size != 1 or not np.isclose(sizes[0], area):
+                dots.set_sizes([area])
+                changed = True
+        if changed:
+            # Schedule after draw_event; Qt suppresses draw_idle during a draw.
+            QTimer.singleShot(0, self.canvas.draw_idle)
 
     def _on_scroll(self, event: Any) -> None:
-        ax = self._ax
-        if ax is None or event.inaxes is not ax or event.xdata is None or event.ydata is None:
+        ax = event.inaxes
+        if ax not in self._full_limits or event.xdata is None or event.ydata is None:
             return
         step = float(getattr(event, "step", 0.0) or 0.0)
-        zoom_in = event.button == "up" or step > 0
-        scale = 0.8 if zoom_in else 1.25
-        xlim = ax.get_xlim()
-        ylim = ax.get_ylim()
-        x_center = float(event.xdata)
-        y_center = float(event.ydata)
-        new_width = (xlim[1] - xlim[0]) * scale
-        new_height = (ylim[1] - ylim[0]) * scale
-        x_rel = (x_center - xlim[0]) / (xlim[1] - xlim[0])
-        y_rel = (y_center - ylim[0]) / (ylim[1] - ylim[0])
-        if new_width <= 1e-12 or new_height <= 1e-12:
+        if not step:
+            step = 1. if event.button == "up" else -1. if event.button == "down" else 0.
+        if not step:
             return
-        ax.set_xlim(x_center - new_width * x_rel, x_center + new_width * (1.0 - x_rel))
-        ax.set_ylim(y_center - new_height * y_rel, y_center + new_height * (1.0 - y_rel))
+        scale = 0.8 ** step
+        left, right = ax.get_xlim()
+        bottom, top = ax.get_ylim()
+        if min(right - left, top - bottom) * scale <= 1e-12:
+            return
+        center = float(event.xdata)
+        ax.set_xbound(center + (left - center) * scale, center + (right - center) * scale)
+        center = float(event.ydata)
+        ax.set_ybound(center + (bottom - center) * scale, center + (top - center) * scale)
         self.canvas.draw_idle()
 
     def _on_button_press(self, event: Any) -> None:
-        ax = self._ax
-        if ax is None or event.inaxes is not ax:
+        ax = event.inaxes
+        if ax not in self._full_limits:
             return
+        self._ax = ax
         if event.dblclick:
             self.reset_view()
+            return
+        if event.button == 3:
+            self._pan_start = (float(event.x), float(event.y), tuple(ax.get_xlim()), tuple(ax.get_ylim()))
             return
         if event.button != 1 or event.xdata is None or event.ydata is None:
             return
@@ -1031,60 +1052,90 @@ class ChanMapCanvas(QWidget):
         if self._selection_patch is not None:
             self._selection_patch.remove()
         self._selection_patch = Rectangle(
-            self._drag_start,
-            0,
-            0,
-            facecolor="#ef4b2d22",
-            edgecolor="#ef4b2d",
-            linewidth=1.2,
-            linestyle="-",
+            self._drag_start, 0, 0, facecolor="#ef4b2d22", edgecolor="#ef4b2d", linewidth=1.2,
         )
         ax.add_patch(self._selection_patch)
         self.canvas.draw_idle()
 
     def _on_motion(self, event: Any) -> None:
-        if self._drag_start is None or self._selection_patch is None:
-            return
-        if event.inaxes is not self._ax or event.xdata is None or event.ydata is None:
-            return
-        x0, y0 = self._drag_start
-        x1 = float(event.xdata)
-        y1 = float(event.ydata)
-        self._selection_patch.set_x(min(x0, x1))
-        self._selection_patch.set_y(min(y0, y1))
-        self._selection_patch.set_width(abs(x1 - x0))
-        self._selection_patch.set_height(abs(y1 - y0))
-        self.canvas.draw_idle()
+        ax = self._ax
+        if self._pan_start is not None and ax is not None and event.x is not None and event.y is not None:
+            x0, y0, xlim, ylim = self._pan_start
+            dx = (float(event.x) - x0) * (xlim[1] - xlim[0]) / ax.bbox.width
+            dy = (float(event.y) - y0) * (ylim[1] - ylim[0]) / ax.bbox.height
+            ax.set_xbound(xlim[0] - dx, xlim[1] - dx)
+            ax.set_ybound(ylim[0] - dy, ylim[1] - dy)
+            self.canvas.draw_idle()
+        elif self._drag_start is not None and self._selection_patch is not None:
+            if event.inaxes is not ax or event.xdata is None or event.ydata is None:
+                return
+            x0, y0 = self._drag_start
+            x1, y1 = float(event.xdata), float(event.ydata)
+            self._selection_patch.set_x(min(x0, x1))
+            self._selection_patch.set_y(min(y0, y1))
+            self._selection_patch.set_width(abs(x1 - x0))
+            self._selection_patch.set_height(abs(y1 - y0))
+            self.canvas.draw_idle()
+        else:
+            self._show_channel_info(event)
+
+    def _show_channel_info(self, event: Any) -> None:
+        ax = event.inaxes
+        points = self._points_by_axes.get(ax)
+        text = ""
+        if points is not None and points["xy"].size and event.x is not None and event.y is not None:
+            xy = points["xy"]
+            xlim, ylim = ax.get_xlim(), ax.get_ylim()
+            visible = ((xy[:, 0] >= xlim[0]) & (xy[:, 0] <= xlim[1])
+                       & (xy[:, 1] >= ylim[0]) & (xy[:, 1] <= ylim[1]))
+            candidates = np.flatnonzero(visible)
+            if candidates.size:
+                screen = ax.transData.transform(xy[candidates])
+                distance = np.sum((screen - [event.x, event.y]) ** 2, axis=1)
+                closest = int(np.argmin(distance))
+                if distance[closest] <= 64.:
+                    point = int(candidates[closest])
+                    site = int(points["sites"][point])
+                    site_text = f" | site {site}" if site >= 0 else ""
+                    channel = int(points["channels"][point])
+                    channel_text = f"channel {channel} (0-based)" if channel >= 0 else "no recorded channel"
+                    state = ("active" if points["connected"][point]
+                             else "excluded" if channel >= 0 else "inactive / unrecorded")
+                    text = (
+                        f"Probe {points['probes'][point]} | {channel_text}"
+                        f"{site_text} | x={xy[point, 0]:g} um | y={xy[point, 1]:g} um | {state}"
+                    )
+        self.canvas.setToolTip(text)
 
     def _on_button_release(self, event: Any) -> None:
+        if self._pan_start is not None:
+            self._pan_start = None
+            return
         ax = self._ax
         if ax is None or self._drag_start is None or self._selection_patch is None:
             return
         x0, y0 = self._drag_start
-        x1 = event.xdata
-        y1 = event.ydata
-        patch = self._selection_patch
-        patch.remove()
+        x1, y1 = event.xdata, event.ydata
+        self._selection_patch.remove()
         self._selection_patch = None
         self._drag_start = None
         if event.inaxes is ax and x1 is not None and y1 is not None:
-            x1 = float(x1)
-            y1 = float(y1)
+            x1, y1 = float(x1), float(y1)
             if abs(x1 - x0) > 1e-9 and abs(y1 - y0) > 1e-9:
-                ax.set_xlim(min(x0, x1), max(x0, x1))
-                ax.set_ylim(min(y0, y1), max(y0, y1))
+                ax.set_xbound(min(x0, x1), max(x0, x1))
+                ax.set_ybound(min(y0, y1), max(y0, y1))
         self.canvas.draw_idle()
 
     def reset_view(self) -> None:
-        ax = self._ax
-        if ax is None or self._full_xlim is None or self._full_ylim is None:
-            return
         if self._selection_patch is not None:
             self._selection_patch.remove()
             self._selection_patch = None
         self._drag_start = None
-        ax.set_xlim(*self._full_xlim)
-        ax.set_ylim(*self._full_ylim)
+        self._pan_start = None
+        for ax, (xlim, ylim) in self._full_limits.items():
+            ax.set_xbound(*xlim)
+            ax.set_ybound(*ylim)
+        self.canvas.setToolTip("")
         self.canvas.draw_idle()
 
 
@@ -1306,6 +1357,7 @@ class BrainRegionProbeWidget(QWidget):
             (group.group_id, channel_info.channel, channel_info.x, channel_info.y)
             for group in self._groups
             for channel_info in group.channels
+            if np.isfinite(channel_info.x) and np.isfinite(channel_info.y)
         ]
 
     def _geometry_view(
@@ -2487,6 +2539,10 @@ class MainWindow(QMainWindow):
         self._refresh_suspended = False
         self._last_chanmap_preview_key: tuple[Any, ...] | None = None
         self._last_xml_warning_key: tuple[Any, ...] | None = None
+        self._np_controls_key: tuple[Any, ...] | None = None
+        self._np_recording_summary = ""
+        self._chanmap_preview_error: str | None = None
+        self._last_recording_error: str | None = None
         self._chanmap_controls_dirty = False
         self._probe_assignments_automatic = True
         self._xml_skipped_channels: set[int] = set()
@@ -2775,6 +2831,7 @@ class MainWindow(QMainWindow):
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self._build_settings_tabs())
+        self.main_splitter.setCollapsible(0, False)
         self.center_scroll_area = HorizontalOnlyScrollArea()
         self.center_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.center_scroll_area.setWidget(self._build_center_panel())
@@ -2784,7 +2841,7 @@ class MainWindow(QMainWindow):
         self.main_splitter.addWidget(self.center_scroll_area)
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setSizes([360, 1140])
+        self.main_splitter.setSizes([620, 880])
         layout.addWidget(self.main_splitter, 1)
 
         layout.addWidget(self._build_run_bar())
@@ -2887,6 +2944,7 @@ class MainWindow(QMainWindow):
         layout.setColumnStretch(6, 1)
 
         self.basepath.textChanged.connect(self._schedule_refresh)
+        self.basepath.editingFinished.connect(self._reload_basepath_metadata)
         self.local_root.textChanged.connect(self._schedule_refresh)
         self.multi_day_name.textChanged.connect(self._schedule_refresh)
         self.basepath.textChanged.connect(self._reset_behavior_discovery_state)
@@ -2900,7 +2958,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_ephys_tab(), "Ephys")
         self.tabs.addTab(self._scroll_area(self._build_behavior_tab()), "Behavior")
-        self.tabs.setMinimumWidth(300)
+        self.tabs.setMinimumWidth(520)
         self.tabs.currentChanged.connect(lambda _index: self._schedule_refresh())
         return self.tabs
 
@@ -3136,6 +3194,8 @@ class MainWindow(QMainWindow):
 
         session = QGroupBox("Session and channel map")
         session_form = self._form_layout(session)
+        self.recording_info = self._hint_label("Choose Basepath to load recording metadata. WILD-NP does not need a manual XML.")
+        session_form.addRow(self.recording_info)
         self.xml_path = QLineEdit()
         self.xml_path.setPlaceholderText("Auto: basepath/basename.xml, or Load XML")
         self.xml_path.textChanged.connect(lambda _text: setattr(self, "_last_xml_warning_key", None))
@@ -3803,7 +3863,7 @@ class MainWindow(QMainWindow):
         header = QWidget()
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
-        for text, stretch in [("geometry", 2), ("XML groups", 4), ("x offset", 1), ("", 0)]:
+        for text, stretch in [("geometry", 3), ("channel groups", 3), ("x offset", 1), ("", 0)]:
             label = QLabel(text)
             header_layout.addWidget(label, stretch)
         layout.addWidget(header)
@@ -3814,9 +3874,9 @@ class MainWindow(QMainWindow):
         self.probe_rows_layout.setSpacing(6)
         layout.addWidget(self.probe_rows_container)
 
-        add_row = QPushButton("Add probe assignment")
-        add_row.clicked.connect(lambda: self._add_probe_assignment_row())
-        layout.addWidget(add_row)
+        self.add_probe_assignment = QPushButton("Add probe assignment")
+        self.add_probe_assignment.clicked.connect(lambda: self._add_probe_assignment_row())
+        layout.addWidget(self.add_probe_assignment)
         return panel
 
     def _add_probe_assignment_row(self, assignment: dict[str, Any] | None = None) -> None:
@@ -3834,17 +3894,20 @@ class MainWindow(QMainWindow):
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         geometry.setMinimumContentsLength(11)
+        geometry.setMinimumWidth(140)
         geometry.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         geometry.setCurrentText(
             _normalize_chanmap_layout(str(assignment.get("type") or "staggered"))
         )
+        geometry.setToolTip(geometry.currentText())
+        geometry.currentTextChanged.connect(geometry.setToolTip)
 
         groups = QLineEdit()
         groups.setMinimumWidth(100)
         groups.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         raw_groups = assignment.get("groups") or []
         groups.setPlaceholderText("0, 1, 2, 3")
-        groups.setToolTip("Editable comma-separated 0-based XML group numbers")
+        groups.setToolTip("0-based channel groups from XML or recording metadata")
         groups.setText(", ".join(str(int(v)) for v in raw_groups))
 
         x_offset = self._spin(-1000000, 1000000, int(assignment.get("x_offset") or 0))
@@ -3856,8 +3919,8 @@ class MainWindow(QMainWindow):
         remove.setFixedWidth(34)
         remove.clicked.connect(lambda: self._remove_probe_assignment_row(row_panel))
 
-        row_layout.addWidget(geometry, 2)
-        row_layout.addWidget(groups, 4)
+        row_layout.addWidget(geometry, 3)
+        row_layout.addWidget(groups, 3)
         row_layout.addWidget(x_offset, 1)
         row_layout.addWidget(remove)
         self.probe_rows_layout.addWidget(row_panel)
@@ -3867,6 +3930,7 @@ class MainWindow(QMainWindow):
             "type": geometry,
             "groups": groups,
             "x_offset": x_offset,
+            "remove": remove,
         }
         self._probe_rows.append(row)
         for widget in [geometry, groups, x_offset]:
@@ -3951,6 +4015,51 @@ class MainWindow(QMainWindow):
             (entered - self._xml_skipped_channels) | (entered & self._manual_reject_channels)
         )
 
+    def _sync_np_controls(self, settings: PipelineGuiSettings, basepath: Path) -> None:
+        key = (basepath.resolve(), tuple(settings.subsession_order))
+        if key != self._np_controls_key:
+            recordings = session_recordings(discover_subsessions(
+                basepath, sort_files=True, alt_sort=None, ignore_folders=[],
+                subsession_order=settings.subsession_order))
+            if not recordings:
+                raise ValueError(f"No data-bearing NP segments found under {basepath}")
+            first = recordings[0]
+            data = channel_map_data(first, probe_assignments=settings.preprocess.probe_assignments)
+            ports = sorted(probe["physical_port"] for probe in first.probes)
+            self._refresh_suspended = True
+            try:
+                self._render_probe_assignments(json.loads(data["probe_assignments_json"]))
+                self._probe_assignments_automatic = not bool(settings.preprocess.probe_assignments)
+                self._xml_skipped_channels = set(self._bad_channels_from_chanmap_data(data))
+                self.reject_channels.setText(", ".join(str(ch) for ch in sorted(
+                    self._manual_reject_channels | self._xml_skipped_channels)))
+                for control in (self.analog_inputs, self.digital_inputs, self.state_score,
+                                self.remove_ttl_artifacts, self.remove_highamp_artifacts):
+                    control.setChecked(False)
+                self.sorter.setCurrentText("kilosort4")
+                self.sorter_partition_mode.setCurrentIndex(self.sorter_partition_mode.findData("probe"))
+                for row in self._probe_rows:
+                    row["groups"].setReadOnly(True)
+                    row["x_offset"].setEnabled(True)
+                    row["x_offset"].setToolTip("Horizontal translation of this NP probe's site coordinates (um)")
+                    row["remove"].setEnabled(False)
+                self.add_probe_assignment.setEnabled(False)
+            finally:
+                self._refresh_suspended = False
+            self._np_controls_key = key
+            self._np_recording_summary = (
+                f"WILD-NP | {NP1_GEOMETRY_NAME} | {len(ports)} probes | "
+                f"{first.num_channels} saved channels | {int(np.count_nonzero(data['connected']))} active | "
+                f"{len(recordings)} segments\n"
+                + "; ".join(f"group {index} = probe port {port}" for index, port in enumerate(ports))
+                + "\nSites are read from the recording. XML and chanMap are generated when running. "
+                "No manual XML is needed. Kilosort4 uses each probe separately; "
+                "sensor export, artifact interpolation and state scoring are off."
+            )
+            self._append_log(self._np_recording_summary + "\n")
+        self.xml_path.setPlaceholderText("WILD-NP: generated automatically from recording metadata")
+        self.recording_info.setText(self._np_recording_summary)
+
     def _sync_xml_controls(self, *_args: Any) -> None:
         if self._refresh_suspended:
             return
@@ -3959,6 +4068,21 @@ class MainWindow(QMainWindow):
         except ValueError:
             return
         self._sync_anatomical_context(settings)
+        basepath = settings.preprocess_source_path or settings.basepath_path
+        if basepath is not None and has_wildx_np_marker(basepath):
+            try:
+                self._sync_np_controls(settings, basepath)
+            except Exception as exc:
+                self._show_recording_error(str(exc))
+            return
+        self._np_controls_key = None
+        self.xml_path.setPlaceholderText("Auto: basepath/basename.xml, or Load XML")
+        self.recording_info.setText("Load XML or an existing chanMap for this recording.")
+        self.add_probe_assignment.setEnabled(True)
+        for row in self._probe_rows:
+            row["groups"].setReadOnly(False)
+            row["x_offset"].setEnabled(True)
+            row["remove"].setEnabled(True)
         xml = settings.resolved_xml_path()
         if xml is None or not xml.exists():
             return
@@ -4124,12 +4248,20 @@ class MainWindow(QMainWindow):
         self._append_warning_log(message)
 
     def _load_settings_chanmap_preview(self, settings: PipelineGuiSettings) -> bool:
-        basepath = settings.basepath_path
+        self._chanmap_preview_error = None
+        basepath = settings.preprocess_source_path or settings.basepath_path
         if basepath is None:
             return False
         xml_path = settings.resolved_xml_path()
         try:
             explicit = self._preview_chanmap_path(settings)
+            if not (self.tabs.currentIndex() == 0 and self.ephys_tabs.currentIndex() == 1) and has_wildx_np_marker(basepath):
+                data = self._current_chanmap_data(settings)
+                if data is None:
+                    return False
+                self.chanmap_canvas.render_chanmap(data, source="WILDX NP applied settings")
+                self._last_chanmap_preview_key = None
+                return True
             if (xml_path is None or not xml_path.exists()) and explicit is None:
                 self._warn_missing_xml_for_settings(settings, context="chanmap-preview")
                 return False
@@ -4155,7 +4287,8 @@ class MainWindow(QMainWindow):
             self.chanmap_canvas.render_chanmap(data, source=explicit or "current GUI settings")
             self._last_chanmap_preview_key = key
             return True
-        except Exception:
+        except Exception as exc:
+            self._chanmap_preview_error = str(exc)
             return False
 
     def _preview_chanmap_path(self, settings: PipelineGuiSettings) -> Path | None:
@@ -4168,9 +4301,18 @@ class MainWindow(QMainWindow):
     def _current_chanmap_data(self, settings: PipelineGuiSettings | None = None) -> dict[str, Any] | None:
         settings = settings or self._collect_settings()
         explicit = self._preview_chanmap_path(settings)
-        basepath = settings.basepath_path
+        basepath = settings.preprocess_source_path or settings.basepath_path
         xml_path = settings.resolved_xml_path()
-        if explicit is not None:
+        use_np = (not (self.tabs.currentIndex() == 0 and self.ephys_tabs.currentIndex() == 1)
+                  and basepath is not None and has_wildx_np_marker(basepath))
+        if use_np:
+            recordings = session_recordings(discover_subsessions(
+                basepath, sort_files=True, alt_sort=None, ignore_folders=[],
+                subsession_order=settings.subsession_order))
+            data = channel_map_data(
+                recordings[0], settings.preprocess.reject_channels,
+                probe_assignments=settings.preprocess.probe_assignments) if recordings else None
+        elif explicit is not None:
             data = loadmat(explicit)
         elif basepath is not None and xml_path is not None and xml_path.exists():
             data = build_channel_map_data(
@@ -4187,7 +4329,8 @@ class MainWindow(QMainWindow):
         if data is not None:
             rejected = set(settings.preprocess.reject_channels)
             ids = np.asarray(data["chanMap0ind"] if "chanMap0ind" in data else np.asarray(data["chanMap"]) - 1).reshape(-1)
-            rejected.update(settings.xml_excluded_channels(ids.tolist()))
+            if not use_np:
+                rejected.update(settings.xml_excluded_channels(ids.tolist()))
             connected = np.asarray(data.get("connected", np.ones(len(ids))), dtype=float).reshape(-1) > 0
             if len(ids) != len(connected):
                 raise AnatomicalMapError("chanMap connected mask and channel IDs have different lengths.")
@@ -4198,24 +4341,32 @@ class MainWindow(QMainWindow):
         try:
             settings = self._collect_settings()
             self._sync_anatomical_context(settings)
+            data = self._current_chanmap_data(settings)
+            if data is None:
+                return []
+            recording_format = str(np.asarray(data.get("recording_format", "")).reshape(-1)[0])
+            if recording_format == "wildx_np":
+                return channel_groups_from_chanmap_data(data)
             xml_path = settings.resolved_xml_path()
             if xml_path is None or not xml_path.exists():
                 raise AnatomicalMapError("Load the session XML before loading or editing an anatomical map.")
             groups = load_session_xml_metadata(xml_path).anatomical_groups_0based
             if not groups:
                 raise AnatomicalMapError(f"No anatomical channel groups found in XML: {xml_path}")
-            data = self._current_chanmap_data()
-            if data is None:
-                return []
             return channel_groups_from_chanmap_data(data, anatomical_groups_0based=groups)
         except (OSError, ValueError, KeyError, SyntaxError) as exc:
             raise AnatomicalMapError(str(exc)) from exc
 
     def _sync_anatomical_context(self, settings: PipelineGuiSettings) -> None:
         xml_path = settings.resolved_xml_path()
+        basepath = settings.preprocess_source_path or settings.basepath_path
+        if basepath is not None and has_wildx_np_marker(basepath):
+            source_context = f"wildx_np:{basepath.resolve()}"
+        else:
+            source_context = str(xml_path.resolve()) if xml_path is not None else ""
         context = (
             str(settings.local_output_dir or settings.basepath_path or ""),
-            str(xml_path.resolve()) if xml_path is not None else "",
+            source_context,
         )
         if self._channel_regions_context is not None and context != self._channel_regions_context:
             self._channel_regions = {}
@@ -4266,19 +4417,50 @@ class MainWindow(QMainWindow):
         default = self._default_anatomical_map_path()
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Load anatomical_map.csv",
+            "Load CellExplorer anatomical_map.csv or Atlaxis channel CSV",
             str(default),
             "CSV files (*.csv);;All files (*)",
         )
         if not path:
             return
         try:
-            regions = load_anatomical_map_csv(path, groups)
-        except (AnatomicalMapError, OSError, UnicodeError) as exc:
+            text = Path(path).read_text(encoding="utf-8-sig")
+            if is_atlaxis_anatomical_csv(text):
+                data = self._current_chanmap_data(self._collect_settings())
+                if data is None:
+                    raise AnatomicalMapError("Load the recorded NP chanMap before importing an Atlaxis CSV.")
+                recording_format = str(np.asarray(data.get("recording_format", "")).reshape(-1)[0])
+                if recording_format != "wildx_np":
+                    raise AnatomicalMapError("Atlaxis channel CSV import requires a recorded WILD-NP chanMap.")
+                ports = sorted(set(int(port) for port in np.asarray(data["probe_ids"]).reshape(-1)))
+                labels = [
+                    f"Physical probe {port} (group {group.group_id})"
+                    for group, port in zip(groups, ports)
+                ]
+                group = groups[0]
+                if len(groups) > 1:
+                    selected, accepted = QInputDialog.getItem(
+                        self, "Import Atlaxis regions", "Destination recorded probe:", labels, 0, False
+                    )
+                    if not accepted:
+                        return
+                    group = groups[labels.index(selected)]
+                imported = parse_atlaxis_anatomical_csv(text, group, data)
+                selected_channels = {channel.channel for channel in group.channels}
+                regions = {
+                    channel: label for channel, label in self._channel_regions.items()
+                    if channel not in selected_channels
+                }
+                regions.update(imported)
+                log_message = f"Imported Atlaxis regions into anatomical group {group.group_id}: {path}\n"
+            else:
+                regions = parse_anatomical_map_csv(text, groups)
+                log_message = f"Loaded anatomical map: {path}\n"
+        except (AnatomicalMapError, OSError, UnicodeError, ValueError, KeyError) as exc:
             QMessageBox.critical(self, "Anatomical map", str(exc))
             return
         self._channel_regions = regions
-        self._append_log(f"Loaded anatomical map: {path}\n")
+        self._append_log(log_message)
 
     def _edit_anatomical_map(self) -> None:
         try:
@@ -4364,9 +4546,34 @@ class MainWindow(QMainWindow):
             self._clear_move_storage_override()
             self._set_subsession_order([])
             self.basepath.setText(path)
-            self._auto_load_existing_xml()
-            self._auto_load_existing_chanmap()
-            self._schedule_refresh()
+            self._reload_basepath_metadata()
+
+    def _reload_basepath_metadata(self) -> None:
+        if self._refresh_suspended:
+            return
+        try:
+            self._refresh_suspended = True
+            try:
+                self._np_controls_key = None
+                self._probe_assignments_automatic = True
+                self._xml_controls_key = None
+                self._xml_skipped_channels.clear()
+                self.reject_channels.setText(", ".join(str(ch) for ch in sorted(self._manual_reject_channels)))
+                self.chanmap_path.clear()
+                self.xml_path.clear()
+                basepath_text = self.basepath.text().strip()
+                is_np = bool(basepath_text) and has_wildx_np_marker(Path(basepath_text).expanduser())
+                if not is_np:
+                    self._auto_load_existing_xml()
+            finally:
+                self._refresh_suspended = False
+            if not is_np:
+                self._sync_xml_controls()
+                self._auto_load_existing_chanmap()
+            self._last_chanmap_preview_key = None
+            self._refresh_preview()
+        except Exception as exc:
+            self._show_recording_error(str(exc))
 
     def _auto_load_existing_xml(self) -> None:
         basepath_text = self.basepath.text().strip()
@@ -6398,6 +6605,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._move_storage_override = None
         self._move_source_snapshot = None
+        self._np_controls_key = None
         self._refresh_suspended = True
         try:
             self.basepath.setText(settings.basepath)
@@ -6607,9 +6815,22 @@ class MainWindow(QMainWindow):
                 lines.extend(self._format_checks(checks))
             self._settings_preview_text = "\n".join(lines)
             if not self._load_settings_chanmap_preview(settings):
-                self.chanmap_canvas.show_empty()
+                if self._chanmap_preview_error:
+                    self._show_recording_error(self._chanmap_preview_error)
+                else:
+                    self.chanmap_canvas.show_empty()
+            else:
+                self._last_recording_error = None
         except Exception as exc:
             self._settings_preview_text = f"Config error:\n{exc}"
+            self._show_recording_error(str(exc))
+
+    def _show_recording_error(self, message: str) -> None:
+        self.chanmap_canvas.show_empty("Could not load recording metadata")
+        self.recording_info.setText(f"Recording metadata: {message}")
+        if message != self._last_recording_error:
+            self._append_warning_log(f"Recording metadata: {message}\n")
+            self._last_recording_error = message
 
     def _format_checks(self, checks: list[CheckResult]) -> list[str]:
         prefix = {"ok": "[OK]", "warn": "[WARN]", "error": "[ERROR]"}
@@ -6620,6 +6841,23 @@ class MainWindow(QMainWindow):
             settings = self._collect_settings()
             if settings.basepath_path is None:
                 raise ValueError("basepath is required.")
+            if has_wildx_np_marker(settings.basepath_path):
+                recordings = session_recordings(discover_subsessions(
+                    settings.basepath_path, sort_files=True, alt_sort=None, ignore_folders=[],
+                    subsession_order=settings.subsession_order))
+                xml_path, chanmap_path = prepare_session_metadata(
+                    recordings, output_dir=settings.local_output_dir, basename=settings.basename,
+                    reject_channels=settings.preprocess.reject_channels, overwrite=True,
+                    source_basepath=settings.basepath_path, lfp_fs=settings.preprocess.lfp_fs,
+                    probe_assignments=settings.preprocess.probe_assignments)
+                self.xml_path.setText(str(xml_path))
+                self.chanmap_path.setText(str(chanmap_path))
+                connected = np.asarray(channel_map_data(recordings[0])["connected"]).reshape(-1)
+                self._append_log(f"Generated WILDX NP chanMap: {chanmap_path}\n"
+                                 f"Inactive binary columns: {np.flatnonzero(~connected).tolist()}\n")
+                self._load_chanmap_preview(chanmap_path)
+                self._refresh_preview()
+                return
             xml_path = settings.resolved_xml_path()
             if xml_path is None or not xml_path.exists():
                 self._warn_missing_xml_for_settings(settings, context="generate-chanmap")
@@ -6653,10 +6891,15 @@ class MainWindow(QMainWindow):
     def _ensure_current_chanmap_for_run(self, settings: PipelineGuiSettings) -> PipelineGuiSettings:
         if settings.basepath_path is None:
             return settings
+        basepath = settings.preprocess_source_path or settings.basepath_path
+        if basepath is not None and has_wildx_np_marker(basepath):
+            # The worker creates XML/chanMap from the applied sites. The generic
+            # XML layout generator must not replace a recorded NP mapping.
+            self._current_chanmap_data(settings)
+            return settings
         xml_path = settings.resolved_xml_path()
         if xml_path is None or not xml_path.exists():
             return settings
-        basepath = settings.preprocess_source_path or settings.basepath_path
         basename = settings.basename
         local_output_dir = settings.local_output_dir
         if basepath is None or local_output_dir is None:

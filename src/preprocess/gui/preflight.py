@@ -8,7 +8,11 @@ import tempfile
 import numpy as np
 from scipy.io import loadmat
 
-from src.preprocess.io import build_channel_map_data, find_rhd_source
+from src.preprocess.io import build_channel_map_data, find_rhd_source, discover_subsessions
+from src.preprocess.wildx_np import (
+    has_wildx_np_marker, session_recordings, channel_map_data,
+    nominal_gain_to_uV, ensure_separate_output, discover_wildx_np_recordings, verified_probe_serial,
+)
 from src.preprocess.paths import resolve_project_path
 from src.preprocess.recording import _local_reference_channels_without_neighbors
 from src.execution.models import StageName
@@ -117,6 +121,11 @@ def _local_cmr_check(settings: PipelineGuiSettings, *, apply_preprocess: bool | 
         if use_existing:
             path = settings.postprocess_chanmap_path() if apply_preprocess is not None else Path(settings.chanmap_path).expanduser()
             data = loadmat(path) if path is not None else None
+        elif has_wildx_np_marker(basepath):
+            recordings = session_recordings(discover_subsessions(
+                basepath, sort_files=True, alt_sort=None, ignore_folders=[],
+                subsession_order=settings.subsession_order))
+            data = channel_map_data(recordings[0], p.reject_channels, probe_assignments=p.probe_assignments)
         else:
             data = build_channel_map_data(
                 basepath=basepath,
@@ -156,7 +165,8 @@ def _local_cmr_check(settings: PipelineGuiSettings, *, apply_preprocess: bool | 
         if len(sizes) != 1:
             raise ValueError("chanMap coordinates, connected mask and channel IDs must have equal lengths")
         rejected = set(p.reject_channels)
-        rejected.update(settings.xml_excluded_channels(device_ch.tolist()))
+        if str(np.asarray(data.get("recording_format", "")).reshape(-1)[0]) != "wildx_np":
+            rejected.update(settings.xml_excluded_channels(device_ch.tolist()))
         connected = connected & ~np.isin(device_ch, list(rejected))
     except (KeyError, OSError, ValueError, SyntaxError) as exc:
         return CheckResult("Local CMR radius", "error", f"could not inspect chanMap geometry: {exc}")
@@ -172,16 +182,21 @@ def _local_cmr_check(settings: PipelineGuiSettings, *, apply_preprocess: bool | 
         return None
 
     locations = np.column_stack((x, y, z)) if z is not None and np.any(z != 0) else np.column_stack((x, y))
-    isolated = _local_reference_channels_without_neighbors(
-        channel_ids=channel_ids,
-        locations=locations,
-        local_radius_um=tuple(p.local_radius_um),
-    )
+    is_np = str(np.asarray(data.get("recording_format", "")).reshape(-1)[0]) == "wildx_np"
+    groups = (np.asarray(data["probe_ids"]).reshape(-1)[connected] if is_np
+              else np.zeros(len(channel_ids), dtype=int))
+    isolated = []
+    for group in np.unique(groups):
+        mask = groups == group
+        isolated.extend(_local_reference_channels_without_neighbors(
+            channel_ids=np.asarray(channel_ids)[mask].tolist(), locations=locations[mask],
+            local_radius_um=tuple(p.local_radius_um)))
     if not isolated:
         return CheckResult("Local CMR radius", "ok", f"all connected channels have local references within {tuple(p.local_radius_um)} um")
 
     diffs = locations[:, None, :] - locations[None, :, :]
     dist = np.sqrt(np.sum(diffs * diffs, axis=2))
+    dist[groups[:, None] != groups[None, :]] = np.inf
     np.fill_diagonal(dist, np.inf)
     nearest = {
         ch: float(np.nanmin(dist[i]))
@@ -236,15 +251,56 @@ def run_preflight(settings: PipelineGuiSettings, mode: RunMode) -> list[CheckRes
         checks.append(CheckResult("Local output", "ok" if output_dir.parent.exists() else "warn", str(output_dir)))
 
     if basepath is not None:
+        np_recordings = []
+        if mode in ("all", "preprocess") and has_wildx_np_marker(basepath):
+            try:
+                np_recordings = session_recordings(discover_subsessions(
+                    basepath, sort_files=True, alt_sort=None, ignore_folders=[],
+                    subsession_order=settings.subsession_order))
+                first = np_recordings[0]
+                if output_dir is not None:
+                    ensure_separate_output(output_dir, basepath)
+                _, excluded = discover_wildx_np_recordings(basepath)
+                connected = np.asarray(channel_map_data(
+                    first, settings.preprocess.reject_channels,
+                    probe_assignments=settings.preprocess.probe_assignments)["connected"]).reshape(-1)
+                checks.append(CheckResult("Acquisition format", "ok",
+                                          f"WILD-NP: {first.num_channels} saved columns, "
+                                          f"{int(connected.sum())} active; AP {first.sampling_frequency:g} Hz; "
+                                          f"{len(np_recordings)} epochs, {len(excluded)} excluded attempts; probe partitions"))
+                checks.append(CheckResult("NP nominal units", "ok",
+                                          f"AP {nominal_gain_to_uV(first, 'ap'):g} uV/count; "
+                                          f"source LF {nominal_gain_to_uV(first, 'lfp'):g} uV/count at {first.lfp_sampling_frequency:.12g} Hz; "
+                                          f"derived LFP {settings.preprocess.lfp_fs:g} Hz in AP storage units"))
+                incomplete = sum(r.metadata["complete"] != "True" for r in np_recordings)
+                unknown_identity = sum(not all(verified_probe_serial(p) for p in r.probes)
+                                       for r in np_recordings)
+                checks.append(CheckResult("NP provenance", "warn",
+                                          f"{incomplete} incomplete saved prefixes; {unknown_identity} epochs lack confirmed probe identity. "
+                                          "Nominal gain only; ADC calibration and AP/PC/LFP synchronization are unverified."))
+                pp = settings.preprocess
+                if pp.run_sorter and str(pp.sorter).lower() != "kilosort4":
+                    checks.append(CheckResult("NP sorter", "error", "Select kilosort4; NP uses independent probe partitions"))
+                if pp.remove_ttl_artifacts or pp.remove_highamp_artifacts:
+                    checks.append(CheckResult("NP artifact interpolation", "error", "Disable artifact removal for this NP route"))
+                if settings.preprocess.analog_inputs or settings.preprocess.digital_inputs:
+                    checks.append(CheckResult("WILDX NP sensor export", "error",
+                                              "Disable analog/digital export; the mixed sensor stream needs its own decoder"))
+                if settings.preprocess.state_score:
+                    checks.append(CheckResult("WILDX NP state scoring", "error",
+                                              "Disable state scoring until AP/LF time alignment is verified"))
+            except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+                checks.append(CheckResult("WILDX NP metadata", "error", str(exc)))
         xml = settings.resolved_xml_path()
         checks.append(
             CheckResult(
                 "Session XML",
-                "ok" if xml is not None and xml.exists() else "error",
-                str(xml) if xml is not None and xml.exists() else "not set. Load XML before running.",
+                "ok" if np_recordings or (xml is not None and xml.exists()) else "error",
+                "generated from WILDX NP applied settings in the Stage worker" if np_recordings else (
+                    str(xml) if xml is not None and xml.exists() else "not set. Load XML before running."),
             )
         )
-        if not _has_openephys_recording(basepath):
+        if not np_recordings and not _has_openephys_recording(basepath):
             rhd = find_rhd_source(basepath, basepath.name)
             if rhd is None and output_dir is not None:
                 local_rhd = output_dir / f"{basepath.name}.rhd"

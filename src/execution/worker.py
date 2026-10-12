@@ -363,6 +363,9 @@ def _run_postprocess(store: RunStore, spec: AttemptSpec) -> dict[str, Any]:
         config.dtype = str(preprocess_fact["outputs"].get("dtype", config.dtype))
         config.chanmap_mat_path = Path(preprocess_fact["outputs"]["chanmap_path"])
         config.reject_channels = [int(value) for value in pre.get("bad_channels_0based", [])]
+        if pre.get("gain_to_uV") is not None:
+            config.gain_to_uV = float(pre["gain_to_uV"])
+            config.offset_to_uV = float(pre["offset_to_uV"])
     if StageName.SORTING.value in spec.upstream_attempts:
         sorting_fact = _load_upstream_result(store, spec, StageName.SORTING)
         sorting_outputs = sorting_fact["outputs"]

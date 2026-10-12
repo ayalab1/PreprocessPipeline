@@ -167,7 +167,7 @@ def _ensure_matlab_shell_env() -> None:
 
 
 def _repo_root() -> Path:
-    return find_project_root()
+    return find_project_root(Path(__file__))
 
 
 def _is_windows() -> bool:
@@ -1832,14 +1832,6 @@ def execute_sorting_job(
         exclude_channels_0based=exclude_channels_0based,
         active_channels_0based=active_channels_0based,
     )
-    # A retry always allocates fresh sorter outputs. Failed attempts remain
-    # on disk and are already included in the volume's used space.
-    from .disk_space import require_disk_space, sorting_space_components
-
-    require_disk_space(
-        Path(output_folder), sorting_space_components(Path(dat_path).stat().st_size),
-        stage="Sorting",
-    )
     matlab_cmd: str | None = None
     ks4_auto_geom_enabled = False
     ks4_auto_geom_options: dict[str, Any] = {}
@@ -1954,6 +1946,19 @@ def execute_sorting_job(
         print("Resolved Kilosort4 params")
     params = _merge_sorter_job_kwargs(params, job_kwargs)
 
+    # Failed attempts already consume reported free space; budget this attempt
+    # using the actual exported channel width and the sorter's file lifecycle.
+    from .disk_space import require_disk_space, sorting_space_components
+
+    require_disk_space(
+        Path(output_folder), sorting_space_components(
+            Path(dat_path).stat().st_size, sorter=sorter_input,
+            num_channels=nch,
+            partition_channel_counts=[len(sorter_active_channels_0based)],
+            config_path=cfg_path,
+        ),
+        stage="Sorting",
+    )
     dat_path = Path(dat_path).resolve()
     recording = se.read_binary(
         str(dat_path),

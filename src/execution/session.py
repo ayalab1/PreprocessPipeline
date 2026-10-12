@@ -430,8 +430,23 @@ def preprocess_output_inventory(result: Any, config: Any) -> dict[str, Any]:
     copied_rhd = output_dir / f"{basename}.rhd"
     if copied_rhd.is_file():
         add(copied_rhd, "rhd")
+    lfp_entry = None
     if bool(getattr(config, "make_lfp", False)):
-        add(result.lfp_path, "lfp")
+        lfp_entry = add(result.lfp_path, "lfp")
+    if getattr(result, "recording_format", None) == "wildx_np":
+        metadata_paths = [(output_dir / "wildx_np_metadata.json", "np_metadata")]
+        if bool(getattr(config, "make_lfp", False)):
+            metadata_paths.append((output_dir / f"{basename}.lfp_metadata.json", "lfp_metadata"))
+        for path, role in metadata_paths:
+            entry = add(path, role)
+            if path.is_file():
+                entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                if role == "lfp_metadata" and lfp_entry is not None:
+                    lfp_metadata = json.loads(path.read_text(encoding="utf-8"))
+                    lfp_entry["binary"] = {
+                        "dtype": "<i2", "n_channels": int(result.n_channels),
+                        "expected_frames": sum(int(value) for value in lfp_metadata["sample_counts"]),
+                    }
     for index, path in enumerate(result.analog_event_paths):
         add(path, f"analog_event_{index:03d}")
     for index, path in enumerate(result.digital_event_paths):
@@ -776,6 +791,7 @@ def _preprocess_contract_identity(store: RunStore, session_dir: Path) -> dict[st
 def _known_preprocess_outputs(session_dir: Path, basename: str) -> list[Path]:
     names = (
         f"{basename}.dat", f"{basename}.lfp", f"{basename}.session.mat",
+        "wildx_np_metadata.json", f"{basename}.lfp_metadata.json",
         f"{basename}.MergePoints.events.mat", f"{basename}.xml",
         f"{basename}.chanCoords.channelInfo.mat", f"{basename}_raw.dat", f"{basename}.rhd",
         "chanMap.mat", "analogin.dat", "digitalin.dat", "auxiliary.dat", "supply.dat", "time.dat",
@@ -1273,7 +1289,7 @@ def _legacy_preprocess_result(session_dir: Path, settings: Any) -> tuple[dict[st
     # artifact-event checkpoints from legacy/direct runs.  Validate every
     # recorded output instead of treating the primary dat/MAT pair as proof of
     # completion.
-    for field in ("analog_event_paths", "digital_event_paths", "state_score_paths", "state_score_figure_paths"):
+    for field in ("analog_event_paths", "digital_event_paths", "state_score_paths", "state_score_figure_paths", "metadata_paths"):
         required.extend(Path(str(value)) for value in manifest.get(field, []) if str(value).strip())
     required.extend(
         Path(str(value))
@@ -1305,6 +1321,27 @@ def _legacy_preprocess_result(session_dir: Path, settings: Any) -> tuple[dict[st
     source_paths = [Path(str(value)).expanduser() for value in manifest.get("subsession_paths", [])]
     if not source_paths or len(source_paths) != len(sample_counts):
         return None
+    is_wildx_np = manifest.get("recording_format") == "wildx_np" or any(
+        path.name == "neuropixels_ap.dat" for path in source_paths)
+    np_metadata = None
+    if is_wildx_np:
+        from src.preprocess.wildx_np import load_output_metadata
+
+        try:
+            lfp_path = (Path(str(manifest.get("lfp_path") or session_dir / f"{basename}.lfp"))
+                        if config.make_lfp else None)
+            np_metadata = load_output_metadata(dat_path, lfp_path=lfp_path)
+            if (np_metadata is None or np_metadata["num_channels"] != n_channels
+                    or [source["ap_samples"] for source in np_metadata["sources"]] != sample_counts):
+                return None
+            required.append(dat_path.parent / "wildx_np_metadata.json")
+            if config.make_lfp:
+                output_rate = np_metadata["lfp_output_contract"]["sampling_frequency"]
+                if output_rate != float(config.lfp_fs) or manifest.get("sr_lfp") != output_rate:
+                    return None
+                required.append(lfp_path.with_suffix(".lfp_metadata.json"))
+        except (OSError, KeyError, TypeError, ValueError):
+            return None
     if any(
         not path.exists()
         or not path.is_file()
@@ -1329,6 +1366,9 @@ def _legacy_preprocess_result(session_dir: Path, settings: Any) -> tuple[dict[st
         "n_channels": n_channels,
         "sr": float(manifest.get("sr") or 0.0),
         "sr_lfp": manifest.get("sr_lfp"),
+        "recording_format": "wildx_np" if is_wildx_np else manifest.get("recording_format"),
+        "gain_to_uV": np_metadata["ap_gain_to_uV"] if is_wildx_np else manifest.get("gain_to_uV"),
+        "offset_to_uV": 0. if is_wildx_np else manifest.get("offset_to_uV"),
         "bad_channels_0based": [int(value) for value in manifest.get("bad_channels_0based", [])],
         "bad_channels_1based": [int(value) for value in manifest.get("bad_channels_1based", [])],
         "subsession_paths": list(manifest.get("subsession_paths", [])),
@@ -1340,7 +1380,7 @@ def _legacy_preprocess_result(session_dir: Path, settings: Any) -> tuple[dict[st
         "state_score_paths": list(manifest.get("state_score_paths", [])),
         "state_score_figure_paths": list(manifest.get("state_score_figure_paths", [])),
     }
-    return result, [str(path.resolve()) for path in required]
+    return result, list(dict.fromkeys(str(path.resolve()) for path in required))
 
 
 def _sorting_outputs(session_dir: Path) -> tuple[list[Path], Path | None]:
@@ -1398,6 +1438,13 @@ def _write_adopted_result(
         ],
     }
     outputs = dict(outputs)
+    pre = dict(outputs.get("preprocess_result") or {})
+    if stage == StageName.PREPROCESS and pre.get("recording_format") == "wildx_np":
+        metadata_names = {"wildx_np_metadata.json", f"{pre['basename']}.lfp_metadata.json"}
+        for entry in inventory["entries"]:
+            path = Path(entry["path"])
+            if path.name in metadata_names:
+                entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     outputs["output_inventory"] = inventory
     store.write_attempt_fact(
         stage,
@@ -1507,6 +1554,29 @@ def _completed_previous_result(
 
 
 def _revalidate_previous_outputs(stage: StageName, result: dict[str, Any]) -> list[str]:
+    outputs = dict(result.get("outputs") or {})
+    np_validated = []
+    if stage == StageName.PREPROCESS:
+        pre = dict(outputs.get("preprocess_result") or {})
+        is_wildx_np = pre.get("recording_format") == "wildx_np" or any(
+            Path(str(path)).name == "neuropixels_ap.dat" for path in pre.get("subsession_paths", []))
+        if is_wildx_np:
+            from src.preprocess.wildx_np import load_output_metadata
+
+            try:
+                dat_path = Path(str(pre["dat_path"]))
+                lfp_path = Path(str(pre["lfp_path"])) if pre.get("lfp_path") else None
+                metadata = load_output_metadata(dat_path, lfp_path=lfp_path)
+                if (metadata is None or pre.get("recording_format") != "wildx_np"
+                        or pre.get("gain_to_uV") != metadata["ap_gain_to_uV"]
+                        or pre.get("offset_to_uV") != 0.
+                        or (lfp_path is not None and pre.get("sr_lfp") != metadata["lfp_sampling_frequency"])):
+                    raise ValueError("recording kind or output units/rate differ from NP metadata")
+                np_validated.append(str((dat_path.parent / "wildx_np_metadata.json").resolve()))
+                if lfp_path is not None:
+                    np_validated.append(str(lfp_path.with_suffix(".lfp_metadata.json").resolve()))
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(f"previous NP preprocess metadata is incomplete or incompatible: {exc}") from exc
     producer_schema = result.get("producer_schema")
     expected_producer = PRODUCER_SCHEMAS[stage.value]
     allowed_producers = {expected_producer}
@@ -1527,8 +1597,7 @@ def _revalidate_previous_outputs(stage: StageName, result: dict[str, Any]) -> li
             inventory, label=f"previous {stage.value} output"
         )
         if stage == StageName.PREPROCESS:
-            return inventory_validated
-    outputs = dict(result.get("outputs") or {})
+            return list(dict.fromkeys(inventory_validated + np_validated))
     if stage == StageName.PREPROCESS:
         pre = dict(outputs.get("preprocess_result") or {})
         output_dir = Path(str(pre.get("local_output_dir") or ""))
@@ -1556,7 +1625,7 @@ def _revalidate_previous_outputs(stage: StageName, result: dict[str, Any]) -> li
             frames = dat_path.stat().st_size // (n_channels * np.dtype("int16").itemsize)
             if frames != sum(sample_counts):
                 raise RuntimeError("previous preprocess dat has a stale sample count")
-        return [str(path.resolve()) for path in required]
+        return list(dict.fromkeys([str(path.resolve()) for path in required] + np_validated))
     if stage == StageName.SORTING:
         from src.sorting_manifest import all_partitions_skipped
         output_dirs = [

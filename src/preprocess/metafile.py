@@ -74,6 +74,7 @@ class PreprocessConfig:
     chanmap_mat_path: Path | None = None
     xml_path: Path | None = None
     reject_channels: list[int] = field(default_factory=list)
+    probe_assignments: list[dict[str, Any]] = field(default_factory=list)
 
     export_intermediate_dat: bool = True
     zero_bad: bool = True
@@ -132,11 +133,12 @@ class MergePointsData:
     timestamps_samples: np.ndarray
     firstlasttimepoints_samples: np.ndarray
     foldernames: list[str]
+    source_epochs: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
 class AcquisitionCatalog:
-    source_type: Literal["intan", "openephys", "wild"]
+    source_type: Literal["intan", "openephys", "wild", "wildx_np"]
     subsession_names: list[str]
     recording_paths: list[Path]
     recording_stream_names: list[str | None]
@@ -175,6 +177,7 @@ class AcquisitionCatalog:
     analog_sample_counts_by_subsession: list[int | None] = field(default_factory=list)
     analog_sampling_frequencies_by_subsession: list[float | None] = field(default_factory=list)
     adc_gains_volts_by_subsession: list[list[float | None]] = field(default_factory=list)
+    wildx_np_recordings: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -207,3 +210,6 @@ class PreprocessResult:
     sorter_partition_manifest_path: Path | None = None
     state_score_paths: list[Path] = field(default_factory=list)
     state_score_figure_paths: list[Path] = field(default_factory=list)
+    gain_to_uV: float | None = None
+    offset_to_uV: float | None = None
+    recording_format: str | None = None

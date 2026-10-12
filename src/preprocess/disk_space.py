@@ -53,10 +53,35 @@ def require_disk_space(
     print(message, flush=True)
 
 
-def sorting_space_components(binary_bytes: int) -> dict[str, int]:
-    # Allow one exported recording plus one full whitened/preprocessed copy.
-    # KiloSort1's RAM cache can reduce the latter, but must not be relied on.
-    return {"sorter recording and temporary data": 2 * int(binary_bytes)}
+def sorting_space_components(
+    binary_bytes: int, *, sorter: str | None = None,
+    num_channels: int = 1, partition_channel_counts: list[int] | None = None,
+    config_path: Path | None = None,
+) -> dict[str, int]:
+    if str(sorter).strip().lower() != "kilosort4":
+        # KiloSort1's RAM cache can reduce the second copy, but is not assured.
+        return {"sorter recording and temporary data": 2 * int(binary_bytes)}
+
+    from .sorter_runner import _coerce_bool, _default_sorter_config_path, _load_params
+
+    params = _load_params(Path(config_path or _default_sorter_config_path("kilosort4")))
+    # These are the SpikeInterface Kilosort4 wrapper's file-lifecycle defaults.
+    export = _coerce_bool(params.get("use_binary_file", True))
+    preprocessed_copy = _coerce_bool(params.get("save_preprocessed_copy", False))
+    delete_export = _coerce_bool(params.get("delete_recording_dat", True))
+    widths = [num_channels] if partition_channel_counts is None else partition_channel_counts
+    if num_channels <= 0 or any(width < 0 or width > num_channels for width in widths):
+        raise ValueError("Sorter partition widths must lie within the binary channel count")
+    retained = peak = 0
+    for width in widths:
+        size = (int(binary_bytes) * int(width) + num_channels - 1) // num_channels
+        exported = size if export else 0
+        processed = size if preprocessed_copy else 0
+        peak = max(peak, retained + exported + processed)
+        # Partitions run sequentially. Saved preprocessed copies persist;
+        # recording.dat is removed after each successful run when requested.
+        retained += processed + (0 if delete_export else exported)
+    return {"sorter recording and temporary data": peak}
 
 
 def preprocess_space_components(
@@ -104,5 +129,18 @@ def preprocess_space_components(
         ):
             pending(f"{name} sidecar", f"{name}.dat", sum(Path(p).stat().st_size for p in paths))
     if sorter:
-        components.update(sorting_space_components(binary_bytes))
+        widths = None
+        if str(sorter).strip().lower() == "kilosort4" and config.sorter_partition_mode != "all":
+            from .sorter_runner import build_sorter_partitions
+
+            partitions = build_sorter_partitions(
+                mode=config.sorter_partition_mode,
+                chanmap_mat_path=config.chanmap_mat_path,
+                num_channels=n_channels,
+            )
+            widths = [len(p.channels_0based) for p in partitions if p.status != "skipped"]
+        components.update(sorting_space_components(
+            binary_bytes, sorter=sorter, num_channels=n_channels,
+            partition_channel_counts=widths, config_path=config.sorter_config_path,
+        ))
     return components

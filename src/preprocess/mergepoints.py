@@ -60,9 +60,10 @@ def save_mergepoints_events_mat(path: Path, data: MergePointsData, *, overwrite:
     if Path(path).exists() and not overwrite:
         existing = validate_mat_output(Path(path), "MergePoints")["MergePoints"]
         try:
-            timestamps = np.asarray(existing["timestamps"], dtype=float)
-            timestamps_samples = np.asarray(existing["timestamps_samples"], dtype=float)
-            firstlast = np.asarray(existing["firstlasttimpoints_samples"], dtype=float)
+            # simplify_cells squeezes a single epoch from (1, 2) to (2,).
+            timestamps = np.atleast_2d(np.asarray(existing["timestamps"], dtype=float))
+            timestamps_samples = np.atleast_2d(np.asarray(existing["timestamps_samples"], dtype=float))
+            firstlast = np.atleast_2d(np.asarray(existing["firstlasttimpoints_samples"], dtype=float))
             foldernames = [str(item) for item in np.asarray(existing["foldernames"], dtype=object).reshape(-1)]
         except Exception as exc:
             raise ValueError(f"Invalid existing MergePoints output: {path}") from exc
@@ -75,6 +76,12 @@ def save_mergepoints_events_mat(path: Path, data: MergePointsData, *, overwrite:
             and np.allclose(firstlast, data.firstlasttimepoints_samples, equal_nan=True)
             and foldernames == [str(item) for item in data.foldernames]
         )
+        if same and data.source_epochs:
+            prior = existing.get("sourceEpochs", [])
+            prior = [prior] if isinstance(prior, dict) else np.asarray(prior, dtype=object).reshape(-1).tolist()
+            same = len(prior) == len(data.source_epochs) and all(
+                isinstance(old, dict) and all(old.get(key) == value for key, value in new.items())
+                for old, new in zip(prior, data.source_epochs))
         if not same:
             raise ValueError(f"Existing MergePoints output is incompatible with current inputs: {path}")
         return Path(path)
@@ -89,4 +96,7 @@ def save_mergepoints_events_mat(path: Path, data: MergePointsData, *, overwrite:
             "detectiondate": datetime.now().strftime("%Y-%m-%d"),
         },
     }
+    if data.source_epochs:
+        merge_points["sourceEpochs"] = np.asarray(data.source_epochs, dtype=object)
+        merge_points["sampleIntervalConvention"] = "zero-based half-open [start, stop)"
     return atomic_savemat(Path(path), {"MergePoints": merge_points}, required_key="MergePoints")

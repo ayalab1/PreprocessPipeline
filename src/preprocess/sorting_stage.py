@@ -74,14 +74,19 @@ def run_sorting_stage(
     xml_path = _resolved_xml_path(config, preprocess_result)
     chanmap_path = _resolved_chanmap_path(config, preprocess_result)
     bad_0 = sorted(set(int(value) for value in preprocess_result.bad_channels_0based))
+    output_gain = getattr(preprocess_result, "gain_to_uV", None)
+    output_offset = getattr(preprocess_result, "offset_to_uV", None)
+    is_np = preprocess_result.recording_format == "wildx_np"
     sorter_input_is_preprocessed = bool(config.do_preprocess)
     sorter_exclude_channels_0based = (
-        bad_0 if config.bad_channels and bad_0 else None
+        bad_0 if (config.bad_channels or is_np) and bad_0 else None
     )
-    partition_excluded = bad_0 if config.bad_channels else []
+    partition_excluded = bad_0 if config.bad_channels or is_np else []
 
     sorter_label = str(config.sorter).strip()
-    partition_mode = str(config.sorter_partition_mode).strip().lower()
+    partition_mode = "probe" if is_np else str(config.sorter_partition_mode).strip().lower()
+    if is_np and sorter_label.lower() != "kilosort4":
+        raise ValueError("WILD-NP currently supports the common Kilosort4 route")
     if partition_mode not in {"all", "probe", "shank"}:
         raise ValueError(
             "sorter_partition_mode must be one of ['all', 'probe', 'shank']. "
@@ -99,7 +104,15 @@ def run_sorting_stage(
         from .disk_space import require_disk_space, sorting_space_components
 
         require_disk_space(
-            output_dir, sorting_space_components(sorter_dat_path.stat().st_size),
+            output_dir, sorting_space_components(
+                sorter_dat_path.stat().st_size, sorter=sorter_label,
+                num_channels=int(preprocess_result.n_channels),
+                partition_channel_counts=(
+                    [int(preprocess_result.n_channels)] if partition_mode == "all" else
+                    [len(p.channels_0based) for p in partitions if p.status != "skipped"]
+                ),
+                config_path=config.sorter_config_path,
+            ),
             stage="Sorting partitions",
         )
     timestamp = output_timestamp or datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -145,8 +158,8 @@ def run_sorting_stage(
             matlab_max_workers=config.matlab_max_workers,
             chanmap_mat_path=chanmap_path,
             dtype=config.dtype,
-            gain_to_uV=config.gain_to_uV,
-            offset_to_uV=config.offset_to_uV,
+            gain_to_uV=config.gain_to_uV if output_gain is None else output_gain,
+            offset_to_uV=config.offset_to_uV if output_offset is None else output_offset,
             sampling_frequency=float(preprocess_result.sr),
             num_channels=int(preprocess_result.n_channels),
             active_channels_0based=(
