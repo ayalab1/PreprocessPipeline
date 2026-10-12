@@ -1832,6 +1832,15 @@ def execute_sorting_job(
         exclude_channels_0based=exclude_channels_0based,
         active_channels_0based=active_channels_0based,
     )
+    from .disk_space import require_disk_space, sorting_space_components
+
+    # Reject insufficient space before resolving MATLAB or creating sorter logs.
+    # KS4 uses its configured file-lifecycle estimate after parameter resolution.
+    if sorter_input != "kilosort4":
+        require_disk_space(
+            Path(output_folder), sorting_space_components(Path(dat_path).stat().st_size),
+            stage="Sorting",
+        )
     matlab_cmd: str | None = None
     ks4_auto_geom_enabled = False
     ks4_auto_geom_options: dict[str, Any] = {}
@@ -1946,19 +1955,17 @@ def execute_sorting_job(
         print("Resolved Kilosort4 params")
     params = _merge_sorter_job_kwargs(params, job_kwargs)
 
-    # Failed attempts already consume reported free space; budget this attempt
-    # using the actual exported channel width and the sorter's file lifecycle.
-    from .disk_space import require_disk_space, sorting_space_components
-
-    require_disk_space(
-        Path(output_folder), sorting_space_components(
-            Path(dat_path).stat().st_size, sorter=sorter_input,
-            num_channels=nch,
-            partition_channel_counts=[len(sorter_active_channels_0based)],
-            config_path=cfg_path,
-        ),
-        stage="Sorting",
-    )
+    # KS4 allocations depend on the exported width and configured file lifecycle.
+    if sorter_input == "kilosort4":
+        require_disk_space(
+            Path(output_folder), sorting_space_components(
+                Path(dat_path).stat().st_size, sorter=sorter_input,
+                num_channels=nch,
+                partition_channel_counts=[len(sorter_active_channels_0based)],
+                config_path=cfg_path,
+            ),
+            stage="Sorting",
+        )
     dat_path = Path(dat_path).resolve()
     recording = se.read_binary(
         str(dat_path),

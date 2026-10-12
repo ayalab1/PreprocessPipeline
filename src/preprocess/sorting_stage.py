@@ -76,7 +76,7 @@ def run_sorting_stage(
     bad_0 = sorted(set(int(value) for value in preprocess_result.bad_channels_0based))
     output_gain = getattr(preprocess_result, "gain_to_uV", None)
     output_offset = getattr(preprocess_result, "offset_to_uV", None)
-    is_np = preprocess_result.recording_format == "wildx_np"
+    is_np = getattr(preprocess_result, "recording_format", None) == "wildx_np"
     sorter_input_is_preprocessed = bool(config.do_preprocess)
     sorter_exclude_channels_0based = (
         bad_0 if (config.bad_channels or is_np) and bad_0 else None
@@ -103,14 +103,17 @@ def run_sorting_stage(
     if any(partition.status != "skipped" for partition in partitions):
         from .disk_space import require_disk_space, sorting_space_components
 
+        partition_channel_counts = None
+        if sorter_label.lower() == "kilosort4":
+            partition_channel_counts = (
+                [int(preprocess_result.n_channels)] if partition_mode == "all" else
+                [len(p.channels_0based) for p in partitions if p.status != "skipped"]
+            )
         require_disk_space(
             output_dir, sorting_space_components(
                 sorter_dat_path.stat().st_size, sorter=sorter_label,
                 num_channels=int(preprocess_result.n_channels),
-                partition_channel_counts=(
-                    [int(preprocess_result.n_channels)] if partition_mode == "all" else
-                    [len(p.channels_0based) for p in partitions if p.status != "skipped"]
-                ),
+                partition_channel_counts=partition_channel_counts,
                 config_path=config.sorter_config_path,
             ),
             stage="Sorting partitions",

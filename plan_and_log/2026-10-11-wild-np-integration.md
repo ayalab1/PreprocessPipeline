@@ -508,3 +508,15 @@ The user explicitly requested commit, push and a PR for this branch. The publica
 ### Input-scope clarification (2026-10-12)
 
 The user requested an explicit distinction from ordinary Neuropixels support. The documentation and PR scope wording now identify this as the WILD-NP recorder's NP1 route, requiring its saved binary layout, stream metadata and configuration receipts. SpikeGLX/Open Ephys recordings are outside this route's scope; selecting NP1 geometry alone does not establish compatible input. Documentation-only follow-up, with scoped diff inspection and no tests or processing.
+
+### CI regression repair (2026-10-12)
+
+The user reported Linux and Windows failures in PR 38. Basic tests run 38286784304 failed the same two existing disk-admission tests on both OSes (112 passed, 2 failed per job).
+
+1. Restore non-KS4 disk admission before MATLAB/dependency initialization, preserving the detailed KS4 allocation estimate.
+2. Keep optional WILD-NP result metadata optional for existing callers, and evaluate partition-channel widths only for KS4 where they are used.
+3. Review the scoped source diff, commit/push the fix to PR 38 and collect the automatically triggered CI result. Do not change tests/fixtures, install dependencies, run local suites or inspect the ongoing recording job.
+CI source-fix outcome:
+- Non-KS4 sorting again checks disk admission before resolving MATLAB or creating sorter logs. KS4 retains its configured exported-width/file-lifecycle estimate.
+- WILD-NP detection uses optional result metadata, consistent with existing callers. Partition channel counts are evaluated only for KS4; generic sorters retain the previous estimate without requiring KS4-only partition fields.
+- Reviewed the focused source diff. Existing tests and CI configuration are unchanged. No local tests/import checks or ongoing recording-job inspection were performed. The automatic CI result after pushing this fix is pending.
