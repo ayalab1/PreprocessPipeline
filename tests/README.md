@@ -259,6 +259,20 @@ Real execution uses data/output paths and can write results, submit jobs, retry
 stages or cancel active work. Define the input, destination, command and expected
 result separately before using those actions as an end-to-end test.
 
+## Postprocessing split memory regression
+
+```bash
+python -m pytest -q tests/preprocess/test_postprocess_split_memory.py
+```
+
+These tests use real SpikeInterface soft merges to verify that persisted
+waveform and PCA buffers are remapped read-only without changing their values,
+and that old heap copies are released. Waveform reads retain spike/channel order
+and stay within a fixed sample count. Serial/parallel splitting and waveform
+rescue batching must preserve the pre-fix assignments for both threshold modes.
+The tests also verify the worker cap and restoration of BLAS thread settings.
+They use small synthetic data and do not prove a full session's peak RAM usage.
+
 ## MATLAB
 
 From the repository root in MATLAB:

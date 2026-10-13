@@ -195,7 +195,7 @@ XML/Phy rate or channel-count metadata is rejected.
 | `noise_label_only` | `false` | Re-label existing quality metrics without rerunning full curation. `--mode noise_label` sets this to true. |
 | `noise_thresholds` | See below | Rules for assigning the Phy `noise` label. |
 | `overwrite` | `false` | Permit replacing postprocess outputs when true. |
-| `worker_count` | Automatic | Direct postprocess workers; persistent Runs use postprocess Stage `cpus`. |
+| `worker_count` | Automatic | Direct postprocess workers; persistent Runs use postprocess Stage `cpus`. Automatic splitting separately caps concurrent unit jobs at four. |
 
 The two censor windows act in sequence. For example, two spikes 0.3 ms apart
 already in unit A can be reduced to one by `duplicate_censored_period_ms=0.5`.
@@ -209,6 +209,18 @@ removed by the earlier within-unit stage.
 The current GUI also lists `chi2` and `quantile` for split threshold mode, but
 the splitter rejects those names. Use `adaptive_chi2` in the GUI; JSON can also
 select `empirical`.
+
+Automatic splitting uses at most four unit jobs, with one BLAS thread per job.
+Its waveform rescue gate evaluates 256 candidates at a time and reads recording
+chunks of at most 65,536 samples (or one waveform if that is longer). These
+limits affect memory and scheduling; PCA feature dimensions, thresholds and
+random seeds are preserved. Advanced calls to `autosplit_outliers_pca()` can
+override `max_workers`, `waveform_batch_size`, and `waveform_chunk_samples`.
+
+For disk-backed analyzers, the already saved waveform and PCA arrays are mapped
+read-only before splitting, releasing the heap copies created by soft merging.
+Feature buffers are released before final feature computation. Large-session
+RAM requirements still depend on unit size and the remaining stages.
 
 ### Noise thresholds
 

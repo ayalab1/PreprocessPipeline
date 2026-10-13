@@ -3,7 +3,46 @@ import scipy.linalg
 import spikeinterface as si
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import chi2
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, effective_n_jobs
+from threadpoolctl import threadpool_limits
+
+
+def _extract_waveforms(rec, frs, ch_ids, nb, na, *, max_chunk_samples=65536):
+    """Read one bounded chunk at a time, preserving input spike order."""
+    frs = np.asarray(frs, dtype=np.int64)
+    ns = nb + na
+    valid = (frs - nb >= 0) & (frs + na <= rec.get_total_samples())
+    output = np.zeros((frs.size, ns, len(ch_ids)), dtype=np.float32)
+    valid_indices = np.flatnonzero(valid)
+    order = np.argsort(frs[valid])
+    ordered_indices = valid_indices[order]
+    limit = max(ns, int(max_chunk_samples))
+
+    first = 0
+    while first < ordered_indices.size:
+        start = int(frs[ordered_indices[first]]) - nb
+        end = int(frs[ordered_indices[first]]) + na
+        stop = first + 1
+        while stop < ordered_indices.size:
+            frame = int(frs[ordered_indices[stop]])
+            if frame - nb > end + 2 * ns or frame + na - start > limit:
+                break
+            end = max(end, frame + na)
+            stop += 1
+        try:
+            chunk = rec.get_traces(start_frame=start, end_frame=end,
+                                   channel_ids=ch_ids, return_in_uV=True)
+        except Exception:
+            chunk = None
+        if chunk is not None:
+            for index in ordered_indices[first:stop]:
+                offset = int(frs[index]) - nb - start
+                if offset + ns <= chunk.shape[0]:
+                    output[index] = chunk[offset:offset + ns]
+        # Drop the previous read before allocating the next chunk.
+        del chunk
+        first = stop
+    return output, int((~valid).sum())
 
 
 def _ptp_amplitudes(waveforms, best_ch):
@@ -45,6 +84,10 @@ def autosplit_outliers_pca(
     verbose: bool = True,
     # ---- Parallelism ----
     n_jobs: int = -1,
+    *,
+    max_workers: int = 4,
+    waveform_batch_size: int = 256,
+    waveform_chunk_samples: int = 65536,
 ):
     """
     Split per-unit outliers using PCA features and Mahalanobis distance with an optional waveform rescue gate.
@@ -94,8 +137,15 @@ def autosplit_outliers_pca(
     verbose : bool, default True
         If True, prints progress and split information to the console.
     n_jobs : int, default -1
-        Number of parallel jobs for unit processing. -1 uses all available CPUs.
+        Requested parallel jobs for unit processing. -1 requests all available CPUs.
         Uses thread-based parallelism (safe for SpikeInterface recordings).
+    max_workers : int, default 4
+        Upper bound on simultaneous unit jobs, whose dense PCA arrays can be large.
+        Each job uses one BLAS thread; this limit affects scheduling, not split criteria.
+    waveform_batch_size : int, default 256
+        Maximum candidate waveforms evaluated together by the rescue gate.
+    waveform_chunk_samples : int, default 65536
+        Maximum contiguous recording read, or one waveform if that is longer.
 
     Returns
     -------
@@ -105,6 +155,11 @@ def autosplit_outliers_pca(
         Only returned if return_details is True. Maps original UIDs to split information.
     """
 
+    for name, value in (("max_workers", max_workers),
+                        ("waveform_batch_size", waveform_batch_size),
+                        ("waveform_chunk_samples", waveform_chunk_samples)):
+        if not isinstance(value, (int, np.integer)) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
     rng = np.random.default_rng(random_state)
 
     # ==========================================================================
@@ -181,73 +236,6 @@ def autosplit_outliers_pca(
             d2 = np.sum((diff ** 2) / diag_var, axis=1)
 
         return np.sqrt(d2)
-
-    def _extract_waveforms(rec, frs, ch_ids, nb, na):
-        """
-        Batch waveform extraction: sort frames, read minimal contiguous chunks,
-        then slice. Much faster than per-spike get_traces calls.
-        """
-        frs = frs.astype(np.int64)
-        n_spikes = frs.size
-        ns = nb + na
-        nc = len(ch_ids)
-        n_samp = rec.get_total_samples()
-
-        valid = (frs - nb >= 0) & (frs + na <= n_samp)
-        W = np.zeros((n_spikes, ns, nc), dtype=np.float32)
-        valid_frs = frs[valid]
-        if valid_frs.size == 0:
-            return W, n_spikes
-
-        # Sort to enable sequential (cache-friendly) reads
-        sort_order = np.argsort(valid_frs)
-        sorted_frs = valid_frs[sort_order]
-
-        # Merge nearby windows into larger chunks (gap < 2x window = read together)
-        gap_thresh = ns * 2
-        chunk_starts = [int(sorted_frs[0]) - nb]
-        chunk_ends = [int(sorted_frs[0]) + na]
-        for f in sorted_frs[1:]:
-            start = int(f) - nb
-            if start <= chunk_ends[-1] + gap_thresh:
-                chunk_ends[-1] = max(chunk_ends[-1], int(f) + na)
-            else:
-                chunk_starts.append(start)
-                chunk_ends.append(int(f) + na)
-
-        # Read each chunk once
-        chunk_cache: dict[int, np.ndarray] = {}
-        for cs, ce in zip(chunk_starts, chunk_ends):
-            try:
-                chunk_cache[cs] = rec.get_traces(
-                    start_frame=cs, end_frame=ce, channel_ids=ch_ids, return_in_uV=True
-                )
-            except Exception:
-                pass
-
-        # Slice each spike from its chunk using binary search (O(log n_chunks) per spike)
-        valid_indices = np.flatnonzero(valid)
-        inv_order = np.empty_like(sort_order)
-        inv_order[sort_order] = np.arange(sort_order.size)
-
-        chunk_starts_arr = np.array(chunk_starts, dtype=np.int64)
-        for sorted_i in range(sorted_frs.size):
-            f = int(sorted_frs[sorted_i])
-            spike_start = f - nb
-            # Binary search: rightmost chunk_start <= spike_start
-            ci = int(np.searchsorted(chunk_starts_arr, spike_start, side='right')) - 1
-            if ci < 0:
-                continue
-            cs = chunk_starts[ci]
-            chunk = chunk_cache.get(cs)
-            if chunk is not None:
-                local_start = spike_start - cs
-                local_end = local_start + ns
-                if local_end <= chunk.shape[0]:
-                    W[valid_indices[inv_order[sorted_i]]] = chunk[local_start:local_end]
-
-        n_zero = int((~valid).sum())
-        return W, n_zero
 
     def _cosine_scores(W, tmpl_win, c_mode):
         X = W.reshape(W.shape[0], -1)
@@ -361,7 +349,10 @@ def autosplit_outliers_pca(
                 tmpl_pick = tmpl_pick[valid_tmpl]
 
                 if tmpl_pick.size > 10:
-                    W_clean, _ = _extract_waveforms(recording, spike_frames[tmpl_pick], sel_ch_ids, nb, na)
+                    W_clean, _ = _extract_waveforms(
+                        recording, spike_frames[tmpl_pick], sel_ch_ids, nb, na,
+                        max_chunk_samples=waveform_chunk_samples,
+                    )
                     valid_clean = np.any(W_clean != 0, axis=(1, 2))
                     W_clean = W_clean[valid_clean]
 
@@ -373,13 +364,15 @@ def autosplit_outliers_pca(
                         valid_cand = (spike_frames[cand_idx] - nb >= 0) & (spike_frames[cand_idx] + na <= n_samp)
                         c_valid_idx = cand_idx[valid_cand]
 
-                        if c_valid_idx.size > 0:
+                        for first in range(0, c_valid_idx.size, waveform_batch_size):
+                            batch_indices = c_valid_idx[first:first + waveform_batch_size]
                             W_cand, _ = _extract_waveforms(
-                                recording, spike_frames[c_valid_idx], sel_ch_ids, nb, na
+                                recording, spike_frames[batch_indices], sel_ch_ids, nb, na,
+                                max_chunk_samples=waveform_chunk_samples,
                             )
                             valid_wf = np.any(W_cand != 0, axis=(1, 2))
                             W_valid = W_cand[valid_wf]
-                            c_valid = c_valid_idx[valid_wf]
+                            c_valid = batch_indices[valid_wf]
 
                             if c_valid.size > 0:
                                 s_cand = _cosine_scores(W_valid, clean_template, wf_center)
@@ -412,11 +405,16 @@ def autosplit_outliers_pca(
     # ==========================================================================
     orig_unit_ids = sorting.get_unit_ids()
     seeds = rng.integers(0, 2**31, size=len(orig_unit_ids)).tolist()
-
-    results = Parallel(n_jobs=n_jobs, prefer="threads")(
-        delayed(_process_unit)(uid, seed)
-        for uid, seed in zip(orig_unit_ids, seeds)
-    )
+    workers = min(effective_n_jobs(n_jobs), max_workers, max(1, len(orig_unit_ids)))
+    if verbose:
+        print(f"[autosplit] {len(orig_unit_ids)} units; workers={workers} "
+              f"(requested={n_jobs}, cap={max_workers}); waveform_batch_size={waveform_batch_size}",
+              flush=True)
+    with threadpool_limits(limits=1, user_api="blas"):
+        results = Parallel(n_jobs=workers, prefer="threads")(
+            delayed(_process_unit)(uid, seed)
+            for uid, seed in zip(orig_unit_ids, seeds)
+        )
 
     # ==========================================================================
     #  5. Reconstruct output in original unit order
