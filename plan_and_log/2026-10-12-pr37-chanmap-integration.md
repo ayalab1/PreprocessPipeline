@@ -38,4 +38,7 @@ The user approved committing and pushing the prepared changes to PR #37.
 2. Push to the existing `fix/preserve-supplied-chanmaps` branch using a normal fast-forward push.
 3. Collect CI results for the published commit and address only concrete failures within this scope.
 
-- Publication and CI results are pending.
+- Published integration commit `16a297b` to PR #37; GitHub now reports it mergeable. In Basic tests run `38327214648`, Linux succeeded and all 151 Windows tests passed (116 pipeline cases and 35 channel-map/GUI cases), but the Windows workflow parent received `KeyboardInterrupt` while waiting for GUI pytest shutdown, ending with `0xc000013a`.
+- Concrete cause: the new active-map GUI regression calls `_claim_blocks_new_run` for a live manual operation. Its `os.kill(pid, 0)` is a POSIX existence probe but emits `CTRL_C_EVENT` on Windows. Replace only this Windows branch with the existing backend `_process_exists` helper, which queries process identity without sending signals; retain POSIX behavior and conservative handling of unknown ownership.
+- Next: review this correction, commit/push it with the updated log, and collect the existing CI results. No additional local test suite or test changes are planned.
+- The separate short-file-lock contention path in `store.py` also uses `os.kill(pid, 0)`; it was not implicated in these CI logs and is outside this targeted manual-session claim correction.

@@ -1048,6 +1048,11 @@ def _claim_blocks_new_run(claim: dict[str, Any]) -> bool:
             pid = int(claim.get("owner_pid") or 0)
             if pid <= 0:
                 return True
+            if os.name == "nt":
+                from .backends.local import _process_exists
+
+                # Signal 0 sends CTRL_C_EVENT on Windows; query identity instead.
+                return _process_exists(pid)
             os.kill(pid, 0)
             return True
         except ProcessLookupError:
