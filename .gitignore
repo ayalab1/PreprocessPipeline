@@ -76,6 +76,7 @@ tests
 !/tests/preprocess/test_chanmap3d_postprocess.py
 !/tests/preprocess/test_highamp_intervals.py
 !/tests/preprocess/test_postprocess_split_memory.py
+!/tests/preprocess/test_postprocess_pca_batches.py
 !/tests/stability/
 /tests/stability/*
 !/tests/stability/test_channel_mad.py

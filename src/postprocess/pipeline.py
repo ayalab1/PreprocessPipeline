@@ -27,6 +27,7 @@ from spikeinterface.exporters import export_to_phy
 
 from .unit_classify import mark_noise_clusters_from_metrics
 from .unit_split import autosplit_outliers_pca
+from .principal_components import compute_principal_components
 
 from ..preprocess.metafile import PreprocessConfig, PreprocessResult
 from ..preprocess.recording import (
@@ -707,12 +708,12 @@ def _compute_merge_split_features(
             "random_spikes": {"method": "all"},
             "waveforms": {},
             "templates": {},
-            "principal_components": {"n_components": n_components, "mode": pc_mode},
             "template_similarity": {},
             "correlograms": {},
         },
         **job_kwargs,
     )
+    compute_principal_components(analyzer, n_components=n_components, mode=pc_mode, job_kwargs=job_kwargs)
 
 
 def _compute_final_features(
@@ -726,7 +727,6 @@ def _compute_final_features(
         "templates": {},
         "noise_levels": {},
         "spike_amplitudes": {},
-        "principal_components": {"n_components": n_components, "mode": pc_mode},
         "template_metrics": {},
         "template_similarity": {},
         "correlograms": {},
@@ -734,6 +734,7 @@ def _compute_final_features(
     if include_locations:
         features.update({"spike_locations": {}, "unit_locations": {}})
     analyzer.compute(features, **job_kwargs)
+    compute_principal_components(analyzer, n_components=n_components, mode=pc_mode, job_kwargs=job_kwargs)
 
 
 def _merge_template_metrics_into_metrics_df(

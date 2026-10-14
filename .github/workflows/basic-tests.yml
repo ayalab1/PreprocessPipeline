@@ -66,6 +66,7 @@ jobs:
               "tests/preprocess/test_chanmap3d_postprocess.py",
               "tests/preprocess/test_postprocess_cleanup.py",
               "tests/preprocess/test_postprocess_split_memory.py",
+              "tests/preprocess/test_postprocess_pca_batches.py",
               "tests/execution/test_input_identity.py",
               "tests/execution/test_progress.py",
               "tests/execution/test_headless_plotting.py",

@@ -273,6 +273,19 @@ rescue batching must preserve the pre-fix assignments for both threshold modes.
 The tests also verify the worker cap and restoration of BLAS thread settings.
 They use small synthetic data and do not prove a full session's peak RAM usage.
 
+## Postprocessing PCA batches
+
+```bash
+python -m pytest -q tests/preprocess/test_postprocess_pca_batches.py
+```
+
+These regressions compare single-batch results with native SpikeInterface,
+force small fitting/projection budgets to verify bounded reads and complete
+ordered input coverage, and reload/merge saved features through the standard
+SpikeInterface extension. Other PCA modes retain their native implementation.
+Large-unit batching can change incremental PCA approximations; these fixtures
+do not establish identical full-session split assignments or peak RAM usage.
+
 ## MATLAB
 
 From the repository root in MATLAB:
