@@ -27,6 +27,7 @@ from spikeinterface.exporters import export_to_phy
 
 from .unit_classify import mark_noise_clusters_from_metrics
 from .unit_split import autosplit_outliers_pca
+from .principal_components import compute_principal_components
 
 from ..preprocess.metafile import PreprocessConfig, PreprocessResult
 from ..preprocess.recording import (
@@ -671,6 +672,33 @@ def _load_postprocess_result_from_existing_outputs(
     )
 
 
+def _map_saved_split_arrays(analyzer) -> int:
+    """Use saved, read-only feature buffers during the split-only read phase.
+
+    SpikeInterface 0.103.2 soft merges copy full waveform/PC arrays into RAM;
+    its normal extension loader also uses eager np.load. Map the already saved
+    arrays directly so the same feature values remain available without those
+    heap copies. No extension is recomputed or saved through these mappings.
+    """
+    if analyzer.format != "binary_folder":
+        return 0
+    mapped_bytes = 0
+    for name in ("waveforms", "principal_components"):
+        if not analyzer.has_extension(name):
+            continue
+        extension = analyzer.get_extension(name)
+        for key, data in list(extension.data.items()):
+            if not isinstance(data, np.ndarray):
+                continue
+            file = Path(analyzer.folder) / "extensions" / name / f"{key}.npy"
+            mapped = np.load(file, mmap_mode="r", allow_pickle=False)
+            if mapped.shape != data.shape or mapped.dtype != data.dtype:
+                raise RuntimeError(f"Saved split feature does not match its in-memory data: {file}")
+            extension.data[key] = mapped
+            mapped_bytes += mapped.nbytes
+    return mapped_bytes
+
+
 def _compute_merge_split_features(
     analyzer, *, n_components: int, pc_mode: str, job_kwargs: dict
 ) -> None:
@@ -680,12 +708,12 @@ def _compute_merge_split_features(
             "random_spikes": {"method": "all"},
             "waveforms": {},
             "templates": {},
-            "principal_components": {"n_components": n_components, "mode": pc_mode},
             "template_similarity": {},
             "correlograms": {},
         },
         **job_kwargs,
     )
+    compute_principal_components(analyzer, n_components=n_components, mode=pc_mode, job_kwargs=job_kwargs)
 
 
 def _compute_final_features(
@@ -699,7 +727,6 @@ def _compute_final_features(
         "templates": {},
         "noise_levels": {},
         "spike_amplitudes": {},
-        "principal_components": {"n_components": n_components, "mode": pc_mode},
         "template_metrics": {},
         "template_similarity": {},
         "correlograms": {},
@@ -707,6 +734,7 @@ def _compute_final_features(
     if include_locations:
         features.update({"spike_locations": {}, "unit_locations": {}})
     analyzer.compute(features, **job_kwargs)
+    compute_principal_components(analyzer, n_components=n_components, mode=pc_mode, job_kwargs=job_kwargs)
 
 
 def _merge_template_metrics_into_metrics_df(
@@ -1523,6 +1551,15 @@ def _run_postprocess_single_session_impl(
             _log("skip merge (no mergeable groups)")
             analyzer_merged = analyzer
 
+        # Merge arrays have already been persisted. Release the original stage
+        # and replace merged heap copies before allocating per-unit PCA work.
+        _intermediate_analyzers.clear()
+        del analyzer
+        mapped_bytes = _map_saved_split_arrays(analyzer_merged)
+        if mapped_bytes:
+            _log(f"mapped saved split features from disk: {mapped_bytes / 1024**3:.2f} GiB")
+        gc.collect()
+
         _log(f"running auto split (verbose={config.split_verbose})")
         sorting_split = autosplit_outliers_pca(
             analyzer_merged,
@@ -1546,6 +1583,7 @@ def _run_postprocess_single_session_impl(
         _log("computing final features for metrics/export")
         # Release intermediate analyzers to free memory-mapped .npy handles (Windows)
         _intermediate_analyzers.clear()
+        del analyzer_merged
         gc.collect()
 
         analyzer_split = _create_stage_analyzer("split", sorting_split)

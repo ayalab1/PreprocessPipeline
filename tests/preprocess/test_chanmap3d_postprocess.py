@@ -170,9 +170,11 @@ def test_merge_candidates_use_3d_distance_with_shared_xy_contacts(
     assert _compute_merge_groups(config, analyzer, recording) == [[1, 3]]
 
 
-def test_final_3d_features_avoid_unsupported_localization() -> None:
+def test_final_3d_features_avoid_unsupported_localization(monkeypatch) -> None:
     computed = []
     analyzer = SimpleNamespace(compute=lambda features, **kwargs: computed.append(features))
+    monkeypatch.setattr("src.postprocess.pipeline.compute_principal_components",
+                        lambda analyzer, **kwargs: computed.append({"principal_components": kwargs}))
 
     _compute_final_features(
         analyzer, n_components=3, pc_mode="by_channel_global",
@@ -181,7 +183,10 @@ def test_final_3d_features_avoid_unsupported_localization() -> None:
 
     assert "spike_locations" not in computed[0]
     assert "unit_locations" not in computed[0]
-    assert {"templates", "spike_amplitudes", "principal_components"} <= computed[0].keys()
+    assert {"templates", "spike_amplitudes"} <= computed[0].keys()
+    assert computed[1]["principal_components"] == {
+        "n_components": 3, "mode": "by_channel_global", "job_kwargs": {},
+    }
 
 
 def test_zero_depth_keeps_existing_2d_layout(tmp_path: Path) -> None:
