@@ -137,16 +137,28 @@ def discover_dlc_files(
     *,
     output_dir: Path | None = None,
     basename: str | None = None,
+    video_only: bool = False,
 ) -> list[DlcFile]:
-    """Discover keypoint tracking outputs in recording order."""
+    """Discover tracking beside videos, or in the existing merged recording order."""
     basepath = Path(basepath).resolve()
     basename = basename or _basename(basepath)
-    foldernames, _timestamps = _load_mergepoints(basepath, basename, output_dir)
+    foldernames = None
+    if not video_only:
+        foldernames, _timestamps = _load_mergepoints(basepath, basename, output_dir)
+    folders = _candidate_subsession_folders(basepath, foldernames)
+    if video_only:
+        folders.insert(0, (basepath.name, basepath))
+    patterns = DLC_DISCOVERY_PATTERNS
+    if video_only:
+        patterns = ("keypoints.csv",) + tuple(p for p in patterns if p != "keypoints.csv")
     found: list[DlcFile] = []
-    for folder_name, folder_path in _candidate_subsession_folders(basepath, foldernames):
+    for folder_name, folder_path in folders:
         if not folder_path.exists() or not folder_path.is_dir():
             continue
-        for priority, pattern in enumerate(DLC_DISCOVERY_PATTERNS):
+        video_path = _find_video_file(folder_path) if video_only else None
+        if video_only and video_path is None:
+            continue
+        for priority, pattern in enumerate(patterns):
             matches = sorted(p for p in folder_path.glob(pattern) if p.is_file())
             if matches:
                 found.append(
@@ -155,7 +167,7 @@ def discover_dlc_files(
                         folder_path=folder_path,
                         path=matches[0],
                         priority=priority,
-                        video_path=_find_video_file(folder_path),
+                        video_path=video_path if video_only else _find_video_file(folder_path),
                     )
                 )
                 break
@@ -816,6 +828,8 @@ def inspect_dlc_ttl_sync(
     camera_sync_selection: str | None = None,
 ) -> list[str]:
     """Check DLC row counts against camera TTL pulses without producing behavior output."""
+    if camera_sync_selection == "video":
+        return []
     basepath = Path(basepath).resolve()
     output_dir = Path(output_dir).resolve() if output_dir is not None else None
     basename = basename or _basename(basepath)
@@ -1042,22 +1056,27 @@ def process_dlc_behavior(
     camera_sync_selection: str | None = None,
     overwrite: bool = False,
     save_mat: bool = True,
+    export_dir: Path | None = None,
 ) -> BehaviorProcessingResult:
     basepath = Path(basepath).resolve()
     basename = basename or _basename(basepath)
     if output_dir is None:
-        raise ValueError("output_dir is required; behavior output should be written to the local output directory.")
+        raise ValueError("output_dir is required for behavior processing.")
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{basename}.animal.behavior.mat"
+    export_dir = Path(export_dir).resolve() if export_dir is not None else output_dir
+    out_path = export_dir / f"{basename}.animal.behavior.mat"
     if out_path.exists() and not overwrite and save_mat:
         return BehaviorProcessingResult(
             behavior=loadmat(out_path, simplify_cells=True).get("behavior", {}),
             output_path=out_path,
         )
 
-    foldernames, merge_timestamps = _load_mergepoints(basepath, basename, output_dir)
-    dlc_files = discover_dlc_files(basepath, output_dir=output_dir, basename=basename)
+    video_time = camera_sync_selection == "video"
+    foldernames, merge_timestamps = (
+        (None, None) if video_time else _load_mergepoints(basepath, basename, output_dir)
+    )
+    dlc_files = discover_dlc_files(basepath, output_dir=output_dir, basename=basename, video_only=video_time)
     if not dlc_files:
         raise FileNotFoundError(f"No keypoint tracking CSV/H5 files found under {basepath}")
 
@@ -1114,38 +1133,73 @@ def process_dlc_behavior(
     warnings_out: list[str] = []
     x_field_names: list[str] = []
     y_field_names: list[str] = []
+    video_offset = 0.0
+    video_timing: list[dict[str, Any]] = []
+    if video_time:
+        notes.append(
+            "Video time uses frame index / FPS. Videos are concatenated in folder-name order; "
+            "recording gaps are unknown and timestamps are not synchronized to electrophysiology."
+        )
 
     for dlc_file in dlc_files:
         table = _apply_likelihood_filter(load_dlc_tracking(dlc_file.path), likelihood)
         primary_idx = resolve_dlc_primary_index(table, primary_coords=primary_coords, primary_point=primary_point)
         table = reorder_dlc_primary(table, primary_idx)
-        fps = _read_video_fps(dlc_file.video_path) or fallback_video_fps
+        recorded_fps = _read_video_fps(dlc_file.video_path)
+        fps = recorded_fps or fallback_video_fps
         if fps is None or fps <= 0:
             raise ValueError(
                 f"Could not determine video FPS for {dlc_file.folder_name}. "
                 "Set the Behavior tab fallback video FPS."
             )
         merge_interval = merge_by_folder.get(dlc_file.folder_name)
-        ttl, ttl_is_global = _load_local_or_global_ttl(
-            basepath=basepath,
-            basename=basename,
-            output_dir=output_dir,
-            dlc_file=dlc_file,
-            merge_interval=merge_interval,
-            camera_adc_channel=camera_adc_channel,
-            camera_sync_selection=camera_sync_selection, fps=fps, n_frames=len(table.frame_index),
-            pulses_delta_range=pulses_delta_range,
-        )
-        matched_t, matched_x, matched_y, note, warn = match_frames_to_ttl(
-            ttl,
-            table.x,
-            table.y,
-            fps=fps,
-            pulses_delta_range=pulses_delta_range,
-            context=dlc_file.folder_name,
-        )
-        if not ttl_is_global and merge_interval is not None:
-            matched_t = matched_t + float(merge_interval[0])
+        if video_time:
+            frames = table.frame_index
+            if (
+                not np.isfinite(fps) or not np.all(np.isfinite(frames))
+                or np.any(frames < 0) or np.any(frames != np.floor(frames))
+                or np.any(np.diff(frames) <= 0)
+            ):
+                raise ValueError(
+                    "Video time requires finite FPS and increasing nonnegative frame indices: "
+                    f"{dlc_file.path}"
+                )
+            matched_t = frames / fps + video_offset
+            matched_x, matched_y = table.x, table.y
+            note = f"video time, {fps:g} Hz, offset={video_offset:g} s"
+            warn = []
+            video_timing.append({
+                "folder": dlc_file.folder_name,
+                "video": str(dlc_file.video_path),
+                "tracking": str(dlc_file.path),
+                "fps": float(fps),
+                "fps_source": "video_metadata" if recorded_fps else "fallback_video_fps",
+                "offset_sec": video_offset,
+                "frame_indices": frames.reshape(1, -1),
+            })
+            if matched_t.size:
+                video_offset = float(matched_t[-1] + 1.0 / fps)
+        else:
+            ttl, ttl_is_global = _load_local_or_global_ttl(
+                basepath=basepath,
+                basename=basename,
+                output_dir=output_dir,
+                dlc_file=dlc_file,
+                merge_interval=merge_interval,
+                camera_adc_channel=camera_adc_channel,
+                camera_sync_selection=camera_sync_selection, fps=fps, n_frames=len(table.frame_index),
+                pulses_delta_range=pulses_delta_range,
+            )
+            matched_t, matched_x, matched_y, note, warn = match_frames_to_ttl(
+                ttl,
+                table.x,
+                table.y,
+                fps=fps,
+                pulses_delta_range=pulses_delta_range,
+                context=dlc_file.folder_name,
+            )
+            if not ttl_is_global and merge_interval is not None:
+                matched_t = matched_t + float(merge_interval[0])
         all_t.append(matched_t)
         all_x.append(matched_x)
         all_y.append(matched_y)
@@ -1204,11 +1258,14 @@ def process_dlc_behavior(
         notes.append(f"interpolated_short_gaps: filled_values={before_nan - after_nan}, threshold_sec={interpolate_gap_sec}")
 
     speed = _speed_from_xy(timestamps, x_cm[:, 0], y_cm[:, 0])
+    if video_time:
+        speed[np.flatnonzero(np.diff(sub_session_mask)) + 1] = np.nan
     trials = np.vstack(all_trials) if all_trials else np.empty((0, 2), dtype=np.float64)
-    epochs = _session_epochs(basepath, basename, output_dir)
+    epochs = np.empty((0,), dtype=object) if video_time else _session_epochs(basepath, basename, output_dir)
     settings = {
         "basepath": str(basepath),
         "output_dir": str(output_dir),
+        "export_dir": str(export_dir),
         "primary_coords": int(primary_coords),
         "primary_point": "" if primary_point is None else str(primary_point),
         "likelihood": float(likelihood),
@@ -1222,6 +1279,10 @@ def process_dlc_behavior(
         "subSessionMask": sub_session_mask.reshape(1, -1),
         "subSessionNames": np.asarray([item.folder_name for item in dlc_files], dtype=object),
     }
+    if video_time:
+        settings["timebase"] = "concatenated_video"
+        settings["synchronized_to_ephys"] = False
+        settings["video_timing"] = np.asarray(video_timing, dtype=object)
     behavior = _build_behavior_struct(
         basename=basename,
         timestamps=timestamps,
@@ -1242,6 +1303,7 @@ def process_dlc_behavior(
         pixel_to_cm_ratio=summary_pixel_to_cm_ratio,
     )
     if save_mat:
+        export_dir.mkdir(parents=True, exist_ok=True)
         savemat(out_path, {"behavior": behavior}, do_compression=True, long_field_names=True)
     return BehaviorProcessingResult(
         behavior=behavior,

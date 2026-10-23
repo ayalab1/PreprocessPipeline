@@ -3464,7 +3464,7 @@ class MainWindow(QMainWindow):
         self.behavior_primary_coords = self._spin(1, 128, 2)
         self.behavior_primary_coords.setVisible(False)
         self.behavior_primary_point = NoWheelComboBox()
-        self.behavior_primary_point.addItem("Discover tracking files first", "")
+        self.behavior_primary_point.addItem("Load behavior from basepath first", "")
         self.behavior_primary_point.currentIndexChanged.connect(self._on_behavior_primary_point_changed)
         self.behavior_likelihood = self._double_spin(0.0, 1.0, 0.0)
         self.behavior_ttl_tolerance = self._double_spin(0.0, 1.0, 0.01)
@@ -3474,25 +3474,24 @@ class MainWindow(QMainWindow):
         )
         self.behavior_fallback_fps = self._double_spin(0.001, 1000.0, 40.0)
         self.behavior_camera_sync = NoWheelComboBox()
+        self.behavior_camera_sync.addItem("Video time (frame / FPS)", "video")
         self.behavior_camera_sync.addItem("Auto detect", "auto")
         self.behavior_camera_sync.setToolTip(
-            "Match recorded Digital/Analog inputs to video timing automatically. "
-            "Discover tracking files to list recorded inputs. Choose an input from the "
-            "dropdown when needed; Auto detect requires one matching input per recording."
+            "Video time uses tracking frame indices and video FPS without electrophysiology. "
+            "Auto detect matches existing Digital/Analog events; choose an input when needed."
         )
         self.behavior_camera_sync.currentIndexChanged.connect(self._on_behavior_sync_input_changed)
-        discover = QPushButton("Discover tracking files")
-        discover.clicked.connect(self._discover_behavior_dlc)
+        discover = QPushButton("Load behavior from basepath")
+        discover.clicked.connect(self._load_behavior_from_basepath)
         self.behavior_dlc_summary = QPlainTextEdit()
         self.behavior_dlc_summary.setReadOnly(True)
         self.behavior_dlc_summary.setMinimumHeight(110)
         self.behavior_dlc_summary.setVisible(False)
         dlc_form.addRow("tracking point", self.behavior_primary_point)
-        dlc_form.addRow("Camera sync input", self.behavior_camera_sync)
+        dlc_form.addRow("Timing source", self.behavior_camera_sync)
         dlc_form.addRow("likelihood threshold", self.behavior_likelihood)
         dlc_form.addRow("TTL duplicate tolerance", self.behavior_ttl_tolerance)
         dlc_form.addRow("fallback video FPS (Hz)", self.behavior_fallback_fps)
-        dlc_form.addRow(discover)
 
         self.behavior_distance_cm = self._double_spin(0.001, 1_000_000.0, 100.0)
         self.behavior_pixel_distance = self._double_spin(0.0, 1_000_000.0, 0.0)
@@ -3502,7 +3501,7 @@ class MainWindow(QMainWindow):
         run = QGroupBox("Export")
         run_form = self._form_layout(run)
         run_behavior = QPushButton("Export Behavior")
-        run_behavior.setToolTip("Save the Behavior MAT file in the selected working output directory.")
+        run_behavior.setToolTip("Save <basename>.animal.behavior.mat directly in the selected basepath.")
         run_behavior.setObjectName("primaryButton")
         run_behavior.clicked.connect(self._run_behavior_export)
         self.run_behavior = run_behavior
@@ -3527,6 +3526,7 @@ class MainWindow(QMainWindow):
             self._connect_refresh(widget)
         self.behavior_distance_cm.valueChanged.connect(self._invalidate_behavior_calibration)
 
+        layout.addWidget(discover)
         layout.addWidget(options)
         layout.addWidget(dlc)
         layout.addWidget(run)
@@ -3766,7 +3766,7 @@ class MainWindow(QMainWindow):
         self.behavior_mode_tabs.addTab(calibration_page, "Calibration")
         self.behavior_mode_tabs.addTab(outlier_page, "Outlier cleanup & interpolation")
         self.behavior_mode_tabs.currentChanged.connect(self._on_behavior_mode_tab_changed)
-        self.behavior_preview_status = QLabel("Discover tracking files to load epoch frames")
+        self.behavior_preview_status = QLabel("Load behavior from basepath to load video frames")
         self.behavior_preview_status.setWordWrap(True)
         self.behavior_preview_status.setVisible(False)
         behavior_layout.addWidget(behavior_head)
@@ -4068,7 +4068,7 @@ class MainWindow(QMainWindow):
         self.recording_info.setText(self._np_recording_summary)
 
     def _sync_xml_controls(self, *_args: Any) -> None:
-        if self._refresh_suspended:
+        if self._refresh_suspended or self.tabs.currentIndex() == 1:
             return
         try:
             settings = self._collect_settings()
@@ -4259,6 +4259,8 @@ class MainWindow(QMainWindow):
         self._append_warning_log(message)
 
     def _load_settings_chanmap_preview(self, settings: PipelineGuiSettings) -> bool:
+        if self.tabs.currentIndex() == 1:
+            return False
         self._chanmap_preview_error = None
         basepath = settings.preprocess_source_path or settings.basepath_path
         if basepath is None:
@@ -4563,6 +4565,7 @@ class MainWindow(QMainWindow):
     def _reload_basepath_metadata(self) -> None:
         if self._refresh_suspended:
             return
+        behavior_only = self.tabs.currentIndex() == 1
         try:
             self._refresh_suspended = True
             try:
@@ -4574,12 +4577,13 @@ class MainWindow(QMainWindow):
                 self.chanmap_path.clear()
                 self.xml_path.clear()
                 basepath_text = self.basepath.text().strip()
-                is_np = bool(basepath_text) and has_wildx_np_marker(Path(basepath_text).expanduser())
-                if not is_np:
+                is_np = (not behavior_only and bool(basepath_text)
+                         and has_wildx_np_marker(Path(basepath_text).expanduser()))
+                if not behavior_only and not is_np:
                     self._auto_load_existing_xml()
             finally:
                 self._refresh_suspended = False
-            if not is_np:
+            if not behavior_only and not is_np:
                 self._sync_xml_controls()
                 self._auto_load_existing_chanmap()
             self._last_chanmap_preview_key = None
@@ -5773,6 +5777,8 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _behavior_sync_label(selection: str) -> str:
+        if selection == "video":
+            return "Video time (frame / FPS)"
         if selection == "auto":
             return "Auto detect"
         source, channel = selection.split(":")
@@ -5786,6 +5792,8 @@ class MainWindow(QMainWindow):
         self.behavior_camera_sync.setCurrentIndex(index)
 
     def _populate_behavior_sync_inputs(self, files: list[Any]) -> None:
+        if self.behavior_camera_sync.currentData() == "video":
+            return
         settings, basepath, basename, output = self._behavior_paths()
         b = settings.behavior
         found = discover_camera_sync_candidates(
@@ -5808,6 +5816,7 @@ class MainWindow(QMainWindow):
         self.behavior_camera_sync.blockSignals(True)
         try:
             self.behavior_camera_sync.clear()
+            self.behavior_camera_sync.addItem(self._behavior_sync_label("video"), "video")
             self.behavior_camera_sync.addItem(auto_label, "auto")
             for key, candidate in choices.items():
                 self.behavior_camera_sync.addItem(candidate.label, key)
@@ -5818,7 +5827,9 @@ class MainWindow(QMainWindow):
     def _on_behavior_sync_input_changed(self, *_args: Any) -> None:
         if self._refresh_suspended or not getattr(self, "_behavior_dlc_files", []):
             return
+        self._behavior_clean_mask = None
         try:
+            self._populate_behavior_sync_inputs(self._behavior_dlc_files)
             settings, basepath, basename, output = self._behavior_paths()
             b = settings.behavior
             warnings = inspect_dlc_ttl_sync(
@@ -5832,10 +5843,23 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._append_behavior_warnings("Behavior sync warnings", [str(exc)])
 
+    def _load_behavior_from_basepath(self) -> None:
+        self.tabs.setCurrentIndex(1)
+        self._reset_behavior_discovery_state()
+        self._set_behavior_sync_selection("video")
+        if not self.basepath.text().strip():
+            self._browse_basepath()
+            if not self.basepath.text().strip():
+                return
+        self._discover_behavior_dlc()
+
     def _discover_behavior_dlc(self) -> None:
         try:
             settings, basepath, basename, local_output = self._behavior_paths()
-            files = discover_dlc_files(basepath, output_dir=local_output, basename=basename)
+            video_only = settings.behavior.camera_sync_selection == "video"
+            files = discover_dlc_files(
+                basepath, output_dir=local_output, basename=basename, video_only=video_only,
+            )
             if not files:
                 text = "No keypoint tracking files found."
             else:
@@ -5843,6 +5867,8 @@ class MainWindow(QMainWindow):
                 for item in files:
                     video = item.video_path.name if item.video_path is not None else "no video"
                     lines.append(f"- {item.folder_name}: {item.path.name} ({video})")
+                if video_only:
+                    lines.append("Timing: video frame / FPS; electrophysiology is not loaded.")
                 text = "\n".join(lines)
             self.behavior_dlc_summary.setPlainText(text)
             self._populate_behavior_primary_points(files)
@@ -5881,12 +5907,12 @@ class MainWindow(QMainWindow):
             widget.deleteLater()
         self._clear_behavior_outlier_tabs()
         self.behavior_mode_tabs.setCurrentIndex(0)
-        self.behavior_preview_status.setText("Discover tracking files to load epoch frames")
+        self.behavior_preview_status.setText("Load behavior from basepath to load video frames")
         self.behavior_pixel_distance.setValue(0.0)
         self.behavior_primary_point.blockSignals(True)
         try:
             self.behavior_primary_point.clear()
-            self.behavior_primary_point.addItem("Discover tracking files first", "")
+            self.behavior_primary_point.addItem("Load behavior from basepath first", "")
         finally:
             self.behavior_primary_point.blockSignals(False)
 
@@ -6049,7 +6075,10 @@ class MainWindow(QMainWindow):
         if self._behavior_dlc_files:
             return self._behavior_dlc_files
         settings, basepath, basename, local_output = self._behavior_paths()
-        files = discover_dlc_files(basepath, output_dir=local_output, basename=basename)
+        files = discover_dlc_files(
+            basepath, output_dir=local_output, basename=basename,
+            video_only=settings.behavior.camera_sync_selection == "video",
+        )
         self._populate_behavior_frame_tabs(files)
         return files
 
@@ -6297,7 +6326,7 @@ class MainWindow(QMainWindow):
         try:
             settings, basepath, basename, local_output = self._behavior_paths()
             b = settings.behavior
-            output_path = local_output / f"{basename}.animal.behavior.mat"
+            output_path = basepath / f"{basename}.animal.behavior.mat"
             if output_path.exists() and not b.overwrite:
                 raise FileExistsError(f"Behavior output already exists. Enable overwrite to replace it:\n{output_path}")
             ratios = self._require_behavior_calibration()
@@ -6324,6 +6353,7 @@ class MainWindow(QMainWindow):
                 camera_sync_selection=b.camera_sync_selection,
                 overwrite=True,
                 save_mat=True,
+                export_dir=basepath,
             )
             lines = [
                 "Behavior export finished",
@@ -6596,7 +6626,8 @@ class MainWindow(QMainWindow):
             postprocess=postprocess,
             execution=execution,
         )
-        resolve_existing_session_settings(settings)
+        if self.tabs.currentIndex() != 1:
+            resolve_existing_session_settings(settings)
         return settings
 
     def _apply_config_settings(
@@ -6751,9 +6782,10 @@ class MainWindow(QMainWindow):
             self._apply_stage_resource_settings(StageName.PREPROCESS, execution.preprocess)
             self._apply_stage_resource_settings(StageName.SORTING, execution.sorting)
             self._apply_stage_resource_settings(StageName.POSTPROCESS, execution.postprocess)
-            chanmap = settings.resolved_chanmap_path()
-            if not self._load_settings_chanmap_preview(settings) and chanmap is not None and chanmap.exists():
-                self._load_chanmap_preview(chanmap)
+            if self.tabs.currentIndex() != 1:
+                chanmap = settings.resolved_chanmap_path()
+                if not self._load_settings_chanmap_preview(settings) and chanmap is not None and chanmap.exists():
+                    self._load_chanmap_preview(chanmap)
         finally:
             self._normalize_worker_fields()
             self._refresh_suspended = False
@@ -6775,9 +6807,10 @@ class MainWindow(QMainWindow):
 
     def _refresh_preview(self) -> None:
         try:
-            self._sync_xml_controls()
-            settings = self._collect_settings()
             current_tab = self.tabs.currentIndex()
+            if current_tab != 1:
+                self._sync_xml_controls()
+            settings = self._collect_settings()
             if hasattr(self, "monitor_stack"):
                 self.monitor_stack.setCurrentIndex(1 if current_tab == 1 else 0)
             ephys_tab = self.ephys_tabs.currentIndex() if hasattr(self, "ephys_tabs") else 0
@@ -6787,8 +6820,8 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 checks = [CheckResult("Preflight", "warn", str(exc))]
             behavior_output = (
-                settings.local_output_dir / (settings.basename + ".animal.behavior.mat")
-                if settings.local_output_dir and settings.basename
+                settings.basepath_path / (settings.basename + ".animal.behavior.mat")
+                if settings.basepath_path and settings.basename
                 else None
             )
             behavior_ready = (
@@ -6799,7 +6832,8 @@ class MainWindow(QMainWindow):
                 f"Basepath: {settings.basepath or '-'}",
                 f"Basename: {settings.basename or '-'}",
                 f"Local output: {settings.local_output_dir or '-'}",
-                f"chanMap: {self._preview_chanmap_path(settings) or settings.resolved_chanmap_path() or '-'}",
+                f"chanMap: {self._preview_chanmap_path(settings) or settings.resolved_chanmap_path() or '-'}"
+                if current_tab != 1 else "Timing: " + self._behavior_sync_label(settings.behavior.camera_sync_selection),
                 f"Behavior output: {behavior_output or '-'}",
                 f"Active workflow: {'Behavior' if current_tab == 1 else 'Ephys ' + mode}",
             ]
@@ -6819,13 +6853,15 @@ class MainWindow(QMainWindow):
                         f"[{'OK' if settings.basepath_path else 'ERROR'}] Basepath: {'set' if settings.basepath_path else 'not set'}",
                         f"[{'OK' if settings.local_output_dir else 'ERROR'}] Local output: {settings.local_output_dir or 'not set'}",
                         f"[{'OK' if behavior_ready else 'ERROR'}] Calibration: {'ready' if behavior_ready else 'click endpoints for all epochs and run calibration'}",
-                        f"[OK] Export target: local output only",
+                        f"[OK] Export target: basepath",
                     ]
                 )
             else:
                 lines.extend(["", "Ephys preflight:"])
                 lines.extend(self._format_checks(checks))
             self._settings_preview_text = "\n".join(lines)
+            if current_tab == 1:
+                return
             if not self._load_settings_chanmap_preview(settings):
                 if self._chanmap_preview_error:
                     self._show_recording_error(self._chanmap_preview_error)
