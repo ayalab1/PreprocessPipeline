@@ -65,3 +65,62 @@ Behavior MAT file directly into the selected basepath, as subsequently requested
   before evaluating the real position/speed output. No implementation work remains.
 - Publication review reuses these execution results; CI and merge results are
   recorded on the associated PR. No additional local validation was run.
+
+
+## 2026-10-27: Synchronization by default
+
+Goal: make camera-event synchronization the default Behavior workflow, as requested
+following the Plum day8 linearTrackBehavior failure. Preserve an explicitly chosen
+video-only workflow and report the actual timing source in exported metadata.
+
+Source state: PreprocessPipeline main at
+`b3f3403aaf1d86b8ba3fd01a3de50472d67e52a4`. The two affected Python files were clean;
+existing unrelated README, parameter-documentation and other changes are retained.
+
+Plan before source edits:
+1. Record the observed GUI/default and output-metadata gaps in the shared ledger.
+2. Keep Auto detect as the initial timing source and preserve the user's current
+   timing selection when loading behavior; remove the forced video-time reset.
+3. Record synchronized_to_ephys for both event-based and explicit video outputs,
+   and update the Behavior workflow and parameter documentation.
+4. Review the scoped diff and run one lightweight Python source syntax check;
+   finish this record and the shared feature row. No new tests or full runs.
+
+Observed input evidence (read-only): Plum/plum_day8_20260930 behavior timestamps
+span 0-914.55 s, while the session's linear-track epoch spans
+11921.7472-12923.8464 s. The behavior provenance records camera_sync_selection=video,
+timebase=concatenated_video and synchronized_to_ephys=false. The empty interval
+selection explains linearTrackBehavior line 159. Existing recordings and exported
+MAT files are outside this default-setting change and will not be rewritten.
+
+Completion:
+- Auto detect is first in the initial and refreshed timing menus. Loading behavior
+  no longer overrides the selection; explicit video or recorded-input choices remain.
+- Successful event-based processing records synchronized_to_ephys=true; explicit
+  video processing records false. This is provenance, not a new synchronization
+  algorithm or independent physical-accuracy qualification. Existing input matching,
+  MergePoints offsets and missing/ambiguous-input failures are unchanged.
+- Updated the README and parameter documentation; recorded the feature in the
+  shared NeuroAnalysis ledger and overview. Existing unrelated edits were preserved.
+- Reviewed the source/documentation diff. One lightweight check compiled both changed
+  Python sources in memory with Python's compile() and passed; no imports or bytecode
+  files were produced. Registry fields, overview row and source references were
+  reviewed as text for consistency. No new tests, GUI execution, test suite,
+  real-data behavior export, commit or push was performed.
+- Remaining: restart the GUI to load this code and use Auto detect or the appropriate
+  recorded camera input when explicitly regenerating Plum day8 behavior. The
+  existing unsynchronized MAT has not been relabeled, overwritten or corrected.
+
+Final source SHA-256 (uncommitted working files over the baseline above):
+- `src/preprocess/behavior.py`: `43b1dd59c6214502f2b526c01e3aa7a94bb89e96ef744581bc2e09aac777c048`
+- `src/preprocess/gui/app.py`: `e3cf6d002bd02e1fa80edde4c3ab356703bfab4c14930cab19db59d36b3409dc`
+
+Publication follow-up (2026-10-27):
+- User explicitly authorized merging and pushing this correction. Fetched origin;
+  local main and origin/main were both b3f3403 with zero divergence.
+- Publish only the two Behavior Python changes, the Behavior portions of README
+  and parameter documentation, and this log. Unrelated local source/documentation,
+  data and shared-ledger work remain outside this PreprocessPipeline commit.
+- Reuse the completed source/diff review and syntax check. No additional local
+  tests or scientific processing are needed for publication. Pull-request checks
+  and the merge outcome are recorded on the associated GitHub PR.

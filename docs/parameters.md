@@ -276,13 +276,21 @@ settings during preprocessing, but do **not** run behavior export.
 | `clean_tracker_jumps` | `true` | GUI tracking-jump cleanup setting. |
 | `dlc_batch_path` | `""` | GUI batch directory for discovering tracking files. |
 | `overwrite` | `false` | Replace existing behavior export when true. |
-| `camera_sync_selection` | `"auto"` | Automatic sync candidate selection, or explicit `adc:N`/`ttl:N` with 1-based suffixes. |
+| `camera_sync_selection` | `"auto"` | Synchronize to recorded camera events by default; explicit `adc:N`/`ttl:N` use 1-based suffixes. Select `"video"` explicitly for unsynchronized frame/FPS timing. |
 | `camera_adc_channel` | `0` | ADC channel for acquisition/export handling, 1-based; zero becomes unspecified. When selecting `adc:N`, keep this equal to `N`. |
 
-The exported file is `<basename>.animal.behavior.mat`, with position in cm,
-speed in cm/s, and timestamps aligned using the recording's exported events.
-Enable the corresponding `preprocess.analog_inputs` or `digital_inputs` export
-before selecting that synchronization source.
+The exported file is `<basename>.animal.behavior.mat`, with position in cm and
+speed in cm/s. By default, timestamps are aligned using the recording's exported
+camera events. Enable the corresponding `preprocess.analog_inputs` or
+`digital_inputs` export before selecting that synchronization source. Missing or
+ambiguous inputs stop synchronized export; they do not select video timing.
+
+The output field `behavior.processinginfo.varargin.synchronized_to_ephys` is
+`true` for camera-event timing and `false` for explicitly selected video timing.
+It records the timing method used, not an independent validation of physical
+synchronization accuracy. Loading behavior preserves the current timing selection;
+video-only operation requires an explicit `"video"` choice. Existing behavior MAT
+files retain their original timestamps until explicitly regenerated.
 
 ## Persistent execution resources
 
