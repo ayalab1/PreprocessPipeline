@@ -3474,11 +3474,11 @@ class MainWindow(QMainWindow):
         )
         self.behavior_fallback_fps = self._double_spin(0.001, 1000.0, 40.0)
         self.behavior_camera_sync = NoWheelComboBox()
-        self.behavior_camera_sync.addItem("Video time (frame / FPS)", "video")
         self.behavior_camera_sync.addItem("Auto detect", "auto")
+        self.behavior_camera_sync.addItem("Video time (frame / FPS)", "video")
         self.behavior_camera_sync.setToolTip(
-            "Video time uses tracking frame indices and video FPS without electrophysiology. "
-            "Auto detect matches existing Digital/Analog events; choose an input when needed."
+            "Auto detect (default) synchronizes tracking using recorded Digital/Analog camera events. "
+            "Select Video time explicitly to use frame indices and FPS without electrophysiology synchronization."
         )
         self.behavior_camera_sync.currentIndexChanged.connect(self._on_behavior_sync_input_changed)
         discover = QPushButton("Load behavior from basepath")
@@ -5816,8 +5816,8 @@ class MainWindow(QMainWindow):
         self.behavior_camera_sync.blockSignals(True)
         try:
             self.behavior_camera_sync.clear()
-            self.behavior_camera_sync.addItem(self._behavior_sync_label("video"), "video")
             self.behavior_camera_sync.addItem(auto_label, "auto")
+            self.behavior_camera_sync.addItem(self._behavior_sync_label("video"), "video")
             for key, candidate in choices.items():
                 self.behavior_camera_sync.addItem(candidate.label, key)
             self._set_behavior_sync_selection(selected)
@@ -5846,7 +5846,6 @@ class MainWindow(QMainWindow):
     def _load_behavior_from_basepath(self) -> None:
         self.tabs.setCurrentIndex(1)
         self._reset_behavior_discovery_state()
-        self._set_behavior_sync_selection("video")
         if not self.basepath.text().strip():
             self._browse_basepath()
             if not self.basepath.text().strip():

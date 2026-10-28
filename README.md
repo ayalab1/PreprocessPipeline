@@ -92,22 +92,32 @@ sorting. Enable `apply_preprocess` for raw inputs that need filtering/reference.
 ### Behavior
 
 Select the **Behavior** tab before browsing a recording folder to skip ephys
-discovery and channel-map loading. **Load behavior from basepath** reads videos
-and keypoint tracking CSV/H5 files directly in that folder or its immediate
-subfolders, using **Video time (frame / FPS)**. Folders without a video are skipped.
+discovery and channel-map loading. **Timing source** defaults to **Auto detect**,
+which synchronizes tracking to recorded Digital/Analog camera events and uses
+MergePoints offsets for local recording epochs. **Load behavior from basepath**
+loads tracking and video previews while preserving the selected timing source.
+Export camera events first; if automatic selection is ambiguous, choose the
+recorded input explicitly. Missing or ambiguous synchronization inputs stop
+synchronized export without falling back to video time.
+
 Select a bodypart and calibrate the video before previewing or exporting positions
 in centimeters and speed in centimeters per second. **Export Behavior** saves
 `<basename>.animal.behavior.mat` directly in the selected basepath. Enable
 **Overwrite existing Behavior output** to replace an existing file there.
-Electrophysiology preprocessing is not required.
+`processinginfo.varargin.synchronized_to_ephys` records `true` for event-based
+timing and `false` for explicit video timing. Changing the default does not
+recompute an existing behavior file.
 
-Video timestamps use tracking frame indices divided by video FPS; the configured
-fallback FPS is used when video metadata is unavailable. Missing tracking rows
-remain missing. Multiple videos are concatenated in folder-name order, with no
-speed calculation across video boundaries. This timebase does not preserve gaps
-between recordings or establish neural synchronization. The export records video
-paths, frame indices, FPS and offsets. To use existing exported camera events
-instead, change **Timing source** to **Auto detect** or a recorded input.
+For behavior-only recordings, explicitly select **Video time (frame / FPS)** before
+loading behavior. This reads videos and keypoint tracking CSV/H5 files directly
+in the basepath or its immediate subfolders, skipping folders without videos.
+Electrophysiology preprocessing is not required in this mode. Video timestamps
+use tracking frame indices divided by video FPS; the configured fallback FPS is
+used when video metadata is unavailable. Missing tracking rows remain missing.
+Multiple videos are concatenated in folder-name order, with no speed calculation
+across video boundaries. This timebase does not preserve recording gaps or
+establish neural synchronization. The export records video paths, frame indices,
+FPS and offsets.
 
 ## Local and Slurm runs
 

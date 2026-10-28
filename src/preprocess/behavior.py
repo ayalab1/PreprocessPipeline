@@ -1271,6 +1271,7 @@ def process_dlc_behavior(
         "likelihood": float(likelihood),
         "camera_adc_channel": 0 if camera_adc_channel is None else int(camera_adc_channel),
         "camera_sync_selection": camera_sync_selection or "legacy",
+        "synchronized_to_ephys": not video_time,
         "pulses_delta_range": float(pulses_delta_range),
         "pixel_to_cm_ratio": summary_pixel_to_cm_ratio,
         "pixel_to_cm_ratios_by_folder": {folder: float(ratio) for folder, ratio in ratio_by_folder.items()},
@@ -1281,7 +1282,6 @@ def process_dlc_behavior(
     }
     if video_time:
         settings["timebase"] = "concatenated_video"
-        settings["synchronized_to_ephys"] = False
         settings["video_timing"] = np.asarray(video_timing, dtype=object)
     behavior = _build_behavior_struct(
         basename=basename,
